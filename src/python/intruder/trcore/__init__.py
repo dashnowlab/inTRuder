@@ -24,6 +24,7 @@ data live with the step that needs them (see ``novelty.platforms``).
 
 from .coords import interval_distance, normalize_chrom, to_external, to_internal
 from .fetch import cache_root, download_bytes, download_file
+from .flanks import Flank, Flanks, flank_identity, flanks_of
 from .motifs import (
     DEFAULT_EQUIVALENCE,
     DEFAULT_TOLERANCE,
@@ -40,10 +41,12 @@ from .motifs import (
     MotifTolerance,
     canonical_motif,
     edit_budget,
+    gc_fraction,
     least_rotation,
     motif_distance,
     primitive_unit,
     reverse_complement,
+    shannon_entropy,
     tiling_distance,
 )
 
@@ -58,6 +61,8 @@ __all__ = [
     "MATCH_VNTR",
     "MAX_FUZZY_MOTIF",
     "STR_MAX_MOTIF",
+    "Flank",
+    "Flanks",
     "MotifEquivalence",
     "MotifMatch",
     "MotifTolerance",
@@ -66,12 +71,16 @@ __all__ = [
     "download_bytes",
     "download_file",
     "edit_budget",
+    "flank_identity",
+    "flanks_of",
+    "gc_fraction",
     "interval_distance",
     "least_rotation",
     "motif_distance",
     "normalize_chrom",
     "primitive_unit",
     "reverse_complement",
+    "shannon_entropy",
     "tiling_distance",
     "to_external",
     "to_internal",

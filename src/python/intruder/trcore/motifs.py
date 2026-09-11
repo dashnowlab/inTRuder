@@ -54,6 +54,8 @@ wrapper for catalogue-scale data is :func:`novelty.platforms.canonical_motifs`.
 
 from __future__ import annotations
 
+import math
+from collections import Counter
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -462,3 +464,36 @@ class MotifTolerance:
 
 # What the tool does unless told otherwise: nothing fuzzy at all.
 DEFAULT_TOLERANCE = MotifTolerance()
+
+
+# --------------------------------------------------------------------------- #
+# scalar motif composition -- pure arithmetic, not a matching policy
+# --------------------------------------------------------------------------- #
+
+def gc_fraction(seq: str) -> float:
+    """Fraction of ``seq`` that is G or C, case-insensitive. ``0.0`` for an empty string.
+
+    Only G/C/A/T count towards the total; an ambiguous IUPAC base is neither
+    counted as GC nor as the denominator, so ``gc_fraction("GCN")`` is the same
+    as ``gc_fraction("GC")`` rather than being diluted by the N.
+    """
+    upper = seq.upper()
+    gc = sum(upper.count(b) for b in "GC")
+    at = sum(upper.count(b) for b in "AT")
+    total = gc + at
+    return gc / total if total else 0.0
+
+
+def shannon_entropy(seq: str) -> float:
+    """Shannon entropy in bits of the base composition of ``seq``. ``0.0`` for an empty string.
+
+    A homopolymer motif (``AAAA``) has entropy ``0``; a motif using all four
+    bases in equal proportion approaches ``2.0``. This is composition only --
+    it says nothing about the order of the bases, so ``ACGT`` and ``ATGC`` score
+    identically.
+    """
+    if not seq:
+        return 0.0
+    counts = Counter(seq.upper())
+    n = len(seq)
+    return -sum((c / n) * math.log2(c / n) for c in counts.values())

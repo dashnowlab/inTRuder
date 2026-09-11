@@ -10,8 +10,9 @@ from __future__ import annotations
 import random
 import sys
 
-import pysam
 import pytest
+
+pysam = pytest.importorskip("pysam")
 
 from intruder.pipeline.compression.annotate import main
 

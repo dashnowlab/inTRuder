@@ -14,20 +14,20 @@ dependencies = [
     "optuna>=4.9.0",
     "pandas>=3.0.5",
     "parasail>=1.3.4",
-    "pysam>=0.23",
     "pytrf>=1.5.0",
     "tqdm>=4.70.0",
 ]
 
 [project.scripts]
-# `uv run novelty ...` etc. from anywhere in the repo. The command names are
+# `uv run novelty ...` etc. from anywhere in the repo. Most command names are
 # unchanged from before the move -- only the module paths behind them shift, so
 # nobody's notes or Nextflow process bodies break.
-svpytrf     = "intruder.pipeline.trf.sv_trfcaller:main"
-filter      = "intruder.pipeline.trf.filter_ins_trf:main"
-novelty     = "intruder.pipeline.novelty.cli:main"
-strchive    = "intruder.pipeline.strchive.__main__:main"
-compression = "intruder.pipeline.compression.annotate:main"
+svpytrf          = "intruder.pipeline.trf.sv_trfcaller:main"
+filter           = "intruder.pipeline.trf.filter_ins_trf:main"
+novelty          = "intruder.pipeline.novelty.cli:main"
+strchive         = "intruder.pipeline.strchive.__main__:main"
+compression      = "intruder.pipeline.compression.annotate:main"
+isolation-forest = "intruder.modeling.unsupervised.isolation_forest.cli:main"
 
 [dependency-groups]
 # Groups, not extras: nothing here is imported by a pipeline step, so none of it
@@ -40,6 +40,7 @@ dev = [
     "pytest>=8",
     "jupyterlab>=4.6.3",
     "ipykernel>=7.3.0",
+    "ipywidgets>=8.1.5",
 ]
 
 # Plotting and stats for `intruder.analysis`. Kept out of the runtime set because
@@ -57,6 +58,24 @@ analysis = [
 # and this is only useful with a token in `.env`. See docs/scripts/DNANexus.md.
 dx = [
     "dxpy>=0.412.0",
+]
+
+# `intruder.pipeline.compression`: the only step that needs pysam. It has no
+# Windows wheel and requires a C build toolchain, so a plain `uv sync` should
+# not have to build it just to run the rest of the pipeline.
+compression = [
+    "pysam>=0.23",
+]
+
+# `intruder.modeling`: isolation-forest anomaly scoring + SHAP explanation.
+# Its own group, not `analysis`, because it is a heavier, more specific stack
+# (SHAP's TreeExplainer) that only the isolation-forest CLI needs; a plotting-only
+# session should not have to pull it in.
+modeling = [
+    "shap>=0.51,<0.52",
+    "scikit-learn>=1.5",
+    "scipy",
+    "matplotlib>=3.11.1",
 ]
 
 [build-system]

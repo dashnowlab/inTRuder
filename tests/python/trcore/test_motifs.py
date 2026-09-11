@@ -25,10 +25,12 @@ from intruder.trcore.motifs import (
     _edit_distance,
     canonical_motif,
     edit_budget,
+    gc_fraction,
     least_rotation,
     motif_distance,
     primitive_unit,
     reverse_complement,
+    shannon_entropy,
     tiling_distance,
 )
 
@@ -439,3 +441,39 @@ def test_max_fuzzy_motif_is_tunable_per_call():
     long_a, long_b = "ACGTACGTACGTACGTACGTA", "ACGTACGTACGTACGTACGTC"   # 21 bp, 1 edit
     assert motif_distance(long_a, long_b, 1, max_fuzzy_motif=50) == 1
     assert motif_distance(long_a, long_b, 1, max_fuzzy_motif=10) == 2   # not attempted
+
+
+# --------------------------------------------------------------------------- #
+# scalar motif composition
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("seq,expected", [
+    ("", 0.0),
+    ("AAAA", 0.0),
+    ("GCGC", 1.0),
+    ("AATG", 0.25),
+    ("ACGT", 0.5),
+])
+def test_gc_fraction(seq, expected):
+    assert gc_fraction(seq) == pytest.approx(expected)
+
+
+def test_gc_fraction_is_case_insensitive_and_ignores_ambiguous_bases():
+    assert gc_fraction("gcgc") == pytest.approx(1.0)
+    # The N does not dilute the GC/AT denominator.
+    assert gc_fraction("GCN") == pytest.approx(gc_fraction("GC"))
+
+
+@pytest.mark.parametrize("seq,expected", [
+    ("", 0.0),
+    ("AAAA", 0.0),
+    ("ACGT", 2.0),
+])
+def test_shannon_entropy(seq, expected):
+    assert shannon_entropy(seq) == pytest.approx(expected)
+
+
+def test_shannon_entropy_is_order_independent():
+    assert shannon_entropy("ACGT") == pytest.approx(shannon_entropy("ATGC"))
+    # More skewed composition -> lower entropy than a uniform one.
+    assert shannon_entropy("AAAT") < shannon_entropy("AACG")
