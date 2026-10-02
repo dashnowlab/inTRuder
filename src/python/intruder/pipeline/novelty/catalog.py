@@ -30,11 +30,7 @@ annotations the platform supplied.
 
 from __future__ import annotations
 
-import os
-import sys
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import ClassVar
 
 import numpy as np
 import pandas as pd
@@ -53,10 +49,7 @@ from .platforms import (
     ANNOTATION_COLUMNS,
     canonical_motifs,
     normalize_chroms,
-    read_catalog,
 )
-
-_CACHE_VERSION = 5
 
 # Ordered least to most novel, which is also the order a combined verdict
 # resolves in: the first status any catalogue reports wins. ``unscreened`` is
@@ -80,36 +73,6 @@ _INT_ANNOTATIONS = ("period", "consensus_size", "per_match", "per_indel")
 # --------------------------------------------------------------------------- #
 # records
 # --------------------------------------------------------------------------- #
-
-@dataclass(frozen=True)
-class RepeatFilter:
-    """Which catalogue rows are allowed to count as annotation at a locus.
-
-    A reference repeat that is short, low-identity or barely repeated is weak
-    evidence that a locus is already known, so these thresholds decide what
-    counts before the verdict is taken -- they change ``n_nearby``, not just the
-    reported best hit. ``None`` means no threshold.
-
-    A platform that does not carry the underlying column cannot be filtered on
-    it; :meth:`inapplicable` names those so the caller can say so once.
-    """
-
-    min_identity: float | None = None      # per_match, on the 0-100 UCSC scale
-    min_copy_num: float | None = None      # copy_num
-    min_length: int | None = None          # end - start, in bp
-
-    _COLUMNS: ClassVar[dict[str, str]] = {"min_identity": "per_match",
-                                          "min_copy_num": "copy_num"}
-
-    def __bool__(self) -> bool:
-        return any(getattr(self, name) is not None
-                   for name in ("min_identity", "min_copy_num", "min_length"))
-
-    def inapplicable(self, annotations: tuple[str, ...]) -> list[str]:
-        """Thresholds that this catalogue has no column for."""
-        return [name for name, column in self._COLUMNS.items()
-                if getattr(self, name) is not None and column not in annotations]
-
 
 @dataclass(frozen=True)
 class ReferenceRepeat:
@@ -206,38 +169,6 @@ class RepeatCatalog:
         index._build(frame)
         return index
 
-    @classmethod
-    def from_file(cls, path: str | os.PathLike[str], *, platform: str = "bed",
-                  fmt: str = "auto",
-                  equivalence: MotifEquivalence = DEFAULT_EQUIVALENCE,
-                  verbose: bool = True, cache: bool = True) -> RepeatCatalog:
-        """Load a catalogue file, using (and refreshing) a cached index if allowed.
-
-        Canonicalising half a million distinct motifs dominates the build, so the
-        finished index is cached next to the table as ``<name>.idx.npz`` and
-        reloaded in well under a second. Pass ``cache=False`` to force a rebuild
-        without reading or writing it.
-
-        The canonical forms baked into the cache depend on ``equivalence``, so it
-        is part of the cache key: changing ``--reverse-complement`` rebuilds
-        rather than silently reusing keys built under the old policy.
-        """
-        path = Path(path)
-        if cache:
-            cached = cls._cache_load(path, equivalence=equivalence, platform=platform,
-                                     fmt=fmt, verbose=verbose)
-            if cached is not None:
-                return cached
-
-        index = cls.from_frame(read_catalog(path, fmt), equivalence=equivalence,
-                               platform=platform)
-        if verbose:
-            print(f"[novelty] {platform}: indexed {len(index):,} repeats across "
-                  f"{len(index._bounds):,} contigs from {path}", file=sys.stderr)
-        if cache:
-            index._cache_save(path, fmt=fmt, verbose=verbose)
-        return index
-
     def _build(self, frame: pd.DataFrame) -> None:
         """Populate the columnar arrays from a normalised catalogue frame."""
         frame = frame.reset_index(drop=True)
@@ -281,118 +212,6 @@ class RepeatCatalog:
             for lo, hi in zip(lows, highs):
                 self._bounds[str(names[codes[lo]])] = (int(lo), int(hi))
                 np.maximum.accumulate(self._ends[lo:hi], out=self._max_end[lo:hi])
-
-    # -- cache -------------------------------------------------------------- #
-
-    @staticmethod
-    def _cache_path(path: Path) -> Path:
-        return path.with_suffix(path.suffix + ".idx.npz")
-
-    @staticmethod
-    def _pack(strings: list[str]) -> tuple[np.ndarray, np.ndarray]:
-        """Variable-length strings as one byte blob plus offsets.
-
-        ``np.array(list_of_str)`` would pad every entry out to the longest motif
-        (1991 bp in hg38), turning 72 MB of payload into 8 GB.
-        """
-        offsets = np.zeros(len(strings) + 1, dtype=np.int64)
-        np.cumsum([len(s) for s in strings], out=offsets[1:])
-        blob = np.frombuffer("".join(strings).encode("ascii"), dtype=np.uint8)
-        return blob, offsets
-
-    @staticmethod
-    def _unpack(blob: np.ndarray, offsets: np.ndarray) -> list[str]:
-        raw = blob.tobytes().decode("ascii")
-        return [raw[offsets[i]:offsets[i + 1]] for i in range(offsets.size - 1)]
-
-    def _cache_save(self, path: Path, *, fmt: str = "auto",
-                    verbose: bool = True) -> None:
-        target = self._cache_path(path)
-        stat = path.stat()
-        mblob, moff = self._pack(self._motifs)
-        cblob, coff = self._pack(self._canon)
-        names = list(self._bounds)
-        payload = {
-            "version": np.array([_CACHE_VERSION]),
-            "source_mtime": np.array([int(stat.st_mtime_ns)]),
-            "source_size": np.array([stat.st_size]),
-            "circular": np.array([int(self.equivalence.circular)]),
-            "reverse_complement": np.array([int(self.equivalence.reverse_complement)]),
-            # -1 stands in for None: "apply RC at every motif length".
-            "reverse_complement_bp": np.array(
-                [-1 if self.equivalence.reverse_complement_bp is None
-                 else int(self.equivalence.reverse_complement_bp)]),
-            "platform": np.array([self.platform]),
-            "fmt": np.array([fmt]),
-            "annotations": np.array(self.annotations),
-            "starts": self._starts, "ends": self._ends, "max_end": self._max_end,
-            "seq_id": self._seq_id,
-            "mblob": mblob, "moff": moff, "cblob": cblob, "coff": coff,
-            "chrom_names": np.array(names),
-            "chrom_lo": np.array([self._bounds[c][0] for c in names], dtype=np.int64),
-            "chrom_hi": np.array([self._bounds[c][1] for c in names], dtype=np.int64),
-        }
-        payload.update({f"annot_{k}": v for k, v in self._annots.items()})
-        try:
-            np.savez(target, **payload)
-        except OSError as exc:                       # read-only dir, full disk
-            if verbose:
-                print(f"[novelty] could not write index cache {target}: {exc}",
-                      file=sys.stderr)
-            return
-        if verbose:
-            print(f"[novelty] cached index -> {target} "
-                  f"({target.stat().st_size / 1e6:.0f} MB)", file=sys.stderr)
-
-    @staticmethod
-    def _cache_equivalence_matches(z, equivalence: MotifEquivalence) -> bool:
-        """Whether a cache file was built under this motif-equivalence policy."""
-        stored_bp = int(z["reverse_complement_bp"][0])
-        return (bool(z["circular"][0]) == equivalence.circular
-                and bool(z["reverse_complement"][0]) == equivalence.reverse_complement
-                and (None if stored_bp < 0 else stored_bp)
-                == equivalence.reverse_complement_bp)
-
-    @classmethod
-    def _cache_load(cls, path: Path, *, equivalence: MotifEquivalence, platform: str,
-                    fmt: str = "auto", verbose: bool = True) -> RepeatCatalog | None:
-        """Return the cached index, or ``None`` if absent, stale or unreadable."""
-        target = cls._cache_path(path)
-        if not target.exists():
-            return None
-        try:
-            stat = path.stat()
-            with np.load(target) as z:
-                if (int(z["version"][0]) != _CACHE_VERSION
-                        or int(z["source_mtime"][0]) != int(stat.st_mtime_ns)
-                        or int(z["source_size"][0]) != stat.st_size
-                        or not cls._cache_equivalence_matches(z, equivalence)
-                        or str(z["platform"][0]) != platform
-                        or str(z["fmt"][0]) != fmt):
-                    return None
-                index = cls(equivalence=equivalence, platform=platform)
-                index._starts = z["starts"]
-                index._ends = z["ends"]
-                index._max_end = z["max_end"]
-                index._seq_id = z["seq_id"]
-                index._annots = {str(name): z[f"annot_{name}"]
-                                 for name in z["annotations"]}
-                index._motifs = cls._unpack(z["mblob"], z["moff"])
-                index._canon = cls._unpack(z["cblob"], z["coff"])
-                names = [str(c) for c in z["chrom_names"]]
-                index._bounds = {
-                    c: (int(lo), int(hi))
-                    for c, lo, hi in zip(names, z["chrom_lo"], z["chrom_hi"])
-                }
-        except (OSError, KeyError, ValueError, EOFError) as exc:
-            if verbose:
-                print(f"[novelty] ignoring unreadable index cache {target}: {exc}",
-                      file=sys.stderr)
-            return None
-        if verbose:
-            print(f"[novelty] {platform}: loaded {len(index):,} repeats across "
-                  f"{len(index._bounds):,} contigs from {target}", file=sys.stderr)
-        return index
 
     # -- overlap search ----------------------------------------------------- #
 
@@ -448,20 +267,6 @@ class RepeatCatalog:
             out.append(np.asarray(hits, dtype=np.int64) if hits else empty)
         return out
 
-    def _passing(self, indices: np.ndarray,
-                 repeat_filter: RepeatFilter | None) -> np.ndarray:
-        """Drop candidate rows the filter excludes; thresholds without a column pass."""
-        if not repeat_filter or indices.size == 0:
-            return indices
-        keep = np.ones(indices.size, dtype=bool)
-        if repeat_filter.min_length is not None:
-            keep &= (self._ends[indices] - self._starts[indices]) >= repeat_filter.min_length
-        if repeat_filter.min_identity is not None and "per_match" in self._annots:
-            keep &= self._annots["per_match"][indices] >= repeat_filter.min_identity
-        if repeat_filter.min_copy_num is not None and "copy_num" in self._annots:
-            keep &= self._annots["copy_num"][indices] >= repeat_filter.min_copy_num
-        return indices[keep]
-
     def overlapping(self, chrom: str, start: int, end: int) -> list[ReferenceRepeat]:
         """Repeats intersecting the 0-based half-open interval ``[start, end)``."""
         chrom = normalize_chrom(chrom)
@@ -513,8 +318,7 @@ class RepeatCatalog:
         return normalize_chrom(chrom) in self._bounds
 
     def screen(self, chrom: str, point: int, motif: str, *, window: int = 10,
-               tolerance: MotifTolerance = DEFAULT_TOLERANCE,
-               repeat_filter: RepeatFilter | None = None) -> Verdict:
+               tolerance: MotifTolerance = DEFAULT_TOLERANCE) -> Verdict:
         """Classify a 0-based reference coordinate + motif as known or novel.
 
         ``window`` is how far off the coordinates may be, in bp: SV breakpoints
@@ -525,7 +329,6 @@ class RepeatCatalog:
         canonical = canonical_motif(motif, self.equivalence)
         (indices,) = self._overlap_batch(
             chrom, np.array([point - window]), np.array([point + window + 1]))
-        indices = self._passing(indices, repeat_filter)
         best = self._best_hit(indices, chrom, point, motif, canonical, tolerance)
         return Verdict(
             chrom=chrom,
@@ -539,7 +342,6 @@ class RepeatCatalog:
 
     def screen_frame(self, chroms, points, motifs, *, window: int = 10,
                      tolerance: MotifTolerance = DEFAULT_TOLERANCE,
-                     repeat_filter: RepeatFilter | None = None,
                      prefix: str = "") -> pd.DataFrame:
         """Screen many loci at once; returns one row of results per query.
 
@@ -567,7 +369,6 @@ class RepeatCatalog:
                 chrom, point_values[rows] - window, point_values[rows] + window + 1)
             for row, indices in zip(rows, batch):
                 point = int(point_values[row])
-                indices = self._passing(indices, repeat_filter)
                 best = self._best_hit(indices, chrom, point, motif_values[row],
                                       canonicals[row], tolerance)
                 n_nearby[row] = len(indices)

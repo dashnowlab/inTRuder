@@ -1,16 +1,17 @@
 """Novelty assessment for tandem repeats found in SV insertions.
 
 A tandem repeat called inside an SV insertion is *novel* when the reference
-genome has nothing like it at that locus. Which reference, though, depends on
-the catalogue: UCSC's ``simpleRepeat`` track and the TRExplorer catalog disagree
-about plenty of loci, so the screen is written against a normalised schema and
-any number of catalogues can be screened at once.
+genome has nothing like it at that locus, against one or more explicitly-given
+reference catalogues (BED4 files, local or URL).
 
     trcore.motifs       motif comparison: equivalence, and tolerance
     trcore.coords       the coordinate conventions both steps share
-    novelty.platforms   reading a catalogue from UCSC, TRExplorer or a BED file
+    novelty.platforms   reading + normalising a catalogue; loading catalogue(s)
     novelty.catalog     the interval index and the known/novel verdict
-    novelty.insertions  purity of the insertion itself, and the filters on it
+    novelty.verdicts    combining verdicts across more than one catalogue
+    novelty.insertions  purity of the insertion itself, and row-level QC --
+                        a judgment on the SV/TRF call, separate from whether
+                        the locus is known; wired into `annotate`, not `query`
     novelty.cli         the `python -m intruder.pipeline.novelty` command line
 """
 
@@ -39,64 +40,57 @@ from .catalog import (
     Hit,
     ReferenceRepeat,
     RepeatCatalog,
-    RepeatFilter,
     Verdict,
 )
-from .insertions import Check, add_insertion_purity, filter_reasons, union_length
+
 from .platforms import (
     ANNOTATION_COLUMNS,
-    CACHE_ENV,
     CATALOG_COLUMNS,
-    PLATFORMS,
-    Platform,
     canonical_motifs,
-    default_cache,
-    ensure_table,
+    is_url,
+    #load_catalogs,
     normalize_chroms,
+    parse_repeats,
     read_catalog,
-    sniff_format,
+    resolve_source,
 )
+from .verdicts import PRECEDENCE, combine_verdicts
 
 __all__ = [
     "ANNOTATION_COLUMNS",
-    "CACHE_ENV",
     "CATALOG_COLUMNS",
     "DEFAULT_EQUIVALENCE",
     "DEFAULT_TOLERANCE",
     "MATCH_KINDS",
     "MAX_FUZZY_MOTIF",
-    "PLATFORMS",
+    "PRECEDENCE",
     "STATUSES",
     "STR_MAX_MOTIF",
     "UNSCREENED",
-    "Check",
     "Hit",
     "MotifEquivalence",
     "MotifMatch",
     "MotifTolerance",
-    "Platform",
     "ReferenceRepeat",
     "RepeatCatalog",
-    "RepeatFilter",
     "Verdict",
-    "add_insertion_purity",
     "canonical_motif",
     "canonical_motifs",
-    "default_cache",
+    "combine_verdicts",
     "edit_budget",
-    "ensure_table",
-    "filter_reasons",
     "interval_distance",
+    "is_url",
     "least_rotation",
+    #"load_catalogs",
     "motif_distance",
     "normalize_chrom",
     "normalize_chroms",
+    "parse_repeats",
     "primitive_unit",
     "read_catalog",
+    "resolve_source",
     "reverse_complement",
-    "sniff_format",
     "tiling_distance",
     "to_external",
     "to_internal",
-    "union_length",
 ]
