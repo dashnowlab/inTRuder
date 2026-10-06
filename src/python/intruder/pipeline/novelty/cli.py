@@ -2,7 +2,7 @@
 
 Just argument parsing and orchestration: turning flags into the domain
 objects (`MotifEquivalence`, `MotifTolerance`), calling into
-`platforms` to load catalogues and `catalog.RepeatCatalog` to screen, and
+`platforms` to load catalogs and `catalog.RepeatCatalog` to screen, and
 `verdicts` to combine results. No source resolution, no download, no
 verdict-combining logic lives here -- see those modules for that.
 
@@ -10,7 +10,7 @@ verdict-combining logic lives here -- see those modules for that.
     python -m intruder.pipeline.novelty query \\
         --repeats ucsc=catalog.bed --chrom chr1 --pos 10772 --motif GC
 
-    # one locus, two catalogues (a local file and a URL)
+    # one locus, two catalogs (a local file and a URL)
     python -m intruder.pipeline.novelty query \\
         --repeats ucsc=catalog.bed \\
         --repeats trexplorer=https://example.org/trexplorer.bed.gz \\
@@ -18,7 +18,8 @@ verdict-combining logic lives here -- see those modules for that.
 
     # a whole table, against both
     python -m intruder.pipeline.novelty annotate \\
-        --repeats ucsc=catalog.bed --repeats trexplorer=trexplorer.bed.gz \\
+        --repeats ucsc=https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/simpleRepeat.txt.gz --format ucsc=ucsc \\
+        --repeats trexplorer=trexplorer.bed.gz \\
         input.tsv output.tsv
 """
 
@@ -33,8 +34,15 @@ from intruder.trcore.coords import to_external, to_internal
 from intruder.trcore.motifs import MAX_FUZZY_MOTIF, MotifEquivalence, MotifTolerance
 
 from .catalog import STATUSES, RepeatCatalog
-from .platforms import parse_repeats, resolve_source, read_catalog
-from .verdicts import PRECEDENCE, combine_verdicts
+from .platforms import parse_catalogs, resolve_source, read_catalog
+
+
+# known < novel_motif < novel_locus < unscreened -- the most conservative
+# verdict wins when catalogs disagree: a locus is only novel if none of
+# them has it. unscreened ranks last since it's an absence of coverage, not
+# an opinion -- any catalogue with an actual verdict outranks it.
+PRECEDENCE = {status: rank for rank, status in enumerate(STATUSES)}
+BY_RANK = dict(enumerate(STATUSES))
 
 
 # --------------------------------------------------------------------------- #
@@ -47,10 +55,10 @@ def _add_screen_args(parser: argparse.ArgumentParser) -> None:
         "--window", type=int, default=10, metavar="BP",
         help="how far a reference repeat may sit from the query coordinate "
              "and still count as the same locus (default: %(default)s)")
-    group.add_argument(
-        "--max-motif-edits", type=int, default=0, metavar="N",
-        help="accept a reference motif within N edits of the query motif "
-             "(default: %(default)s, exact only)")
+    # group.add_argument(
+    #     "--max-motif-edits", type=int, default=0, metavar="N",
+    #     help="accept a reference motif within N edits of the query motif "
+    #          "(default: %(default)s, exact only)")
     group.add_argument(
         "--max-motif-edit-fraction", type=float, default=None, metavar="FRAC",
         help="also accept a reference motif within FRAC x its length, for "
@@ -62,20 +70,9 @@ def _add_screen_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument(
         "--circular", action=argparse.BooleanOptionalAction, default=True,
         help="CAG == AGC == GCA, i.e. rotation-equivalent (default: on)")
-    group.add_argument(
-        "--reverse-complement", action="store_true",
-        help="CAG == CTG, i.e. opposite-strand equivalent (default: off)")
-
-
-def _equivalence(args: argparse.Namespace) -> MotifEquivalence:
-    return MotifEquivalence(circular=args.circular,
-                            reverse_complement=args.reverse_complement)
-
-
-def _tolerance(args: argparse.Namespace) -> MotifTolerance:
-    return MotifTolerance(max_edits=args.max_motif_edits or 0,
-                          max_edit_fraction=args.max_motif_edit_fraction,
-                          max_fuzzy_motif=args.max_fuzzy_motif or MAX_FUZZY_MOTIF)
+    # group.add_argument(
+    #     "--reverse-complement", action="store_true",
+    #     help="CAG == CTG, i.e. opposite-strand equivalent (default: off)")
 
 
 def _add_catalog_args(parser: argparse.ArgumentParser) -> None:
@@ -84,6 +81,35 @@ def _add_catalog_args(parser: argparse.ArgumentParser) -> None:
         help="a reference catalogue, as NAME=PATH or NAME=URL (BED4: "
              "chrom start end motif). Repeat this flag for more than one "
              "catalogue; NAME becomes the output column prefix.")
+    parser.add_argument(
+        "--format", action="append", default=[], metavar="NAME=FMT",
+        help="format override for one --repeats catalogue, as NAME=FMT: "
+             "'bed' (default, plain BED4) or 'ucsc' (a raw UCSC "
+             "simpleRepeat.txt(.gz) table dump). Repeat for more than one "
+             "catalogue needing a non-default format.")
+
+
+def _parse_formats(specs: list[str]) -> dict[str, str]:
+    """``--format NAME=FMT``, in the order given; names unique."""
+    formats: dict[str, str] = {}
+    for spec in specs:
+        name, sep, fmt = spec.partition("=")
+        if not sep or not name or not fmt:
+            raise ValueError(f"--format {spec!r} must be NAME=FMT")
+        if name in formats:
+            raise ValueError(f"--format name {name!r} given twice")
+        formats[name] = fmt
+    return formats
+
+
+def _equivalence(args: argparse.Namespace) -> MotifEquivalence:
+    return MotifEquivalence(circular=args.circular)
+
+
+def _tolerance(args: argparse.Namespace) -> MotifTolerance:
+    return MotifTolerance(#max_edits=args.max_motif_edits or 0,
+                          max_edit_fraction=args.max_motif_edit_fraction,
+                          max_fuzzy_motif=args.max_fuzzy_motif or MAX_FUZZY_MOTIF)
 
 
 # --------------------------------------------------------------------------- #
@@ -92,19 +118,71 @@ def _add_catalog_args(parser: argparse.ArgumentParser) -> None:
 
 
 def load_catalogs(specs: list[str], *, equivalence: MotifEquivalence,
+                  formats: dict[str, str] | None = None,
                   verbose: bool = True) -> dict[str, RepeatCatalog]:
-    """Build one RepeatCatalog per ``--repeats`` spec, in the order given."""
+    """Build one RepeatCatalog per ``--repeats`` spec, in the order given.
+
+    ``formats`` maps a catalogue's name to an explicit format ('bed'/'ucsc');
+    any name not in it defaults to 'bed'. Never sniffed from the file itself.
+    """
+    formats = formats or {}
     catalogs: dict[str, RepeatCatalog] = {}
-    for name, source in parse_repeats(specs).items():
+    for name, source in parse_catalogs(specs).items():
         path = resolve_source(name, source)
-        frame = read_catalog(path, fmt="bed")
+        fmt = formats.get(name, "bed")
+        frame = read_catalog(path, fmt=fmt)
         catalogs[name] = RepeatCatalog.from_frame(frame, equivalence=equivalence,
                                                    platform=name)
         if verbose:
-            print(f"[novelty] {name}: {len(catalogs[name]):,} repeat(s) from {path}",
-                  file=sys.stderr)
+            print(f"[novelty] {name}: {len(catalogs[name]):,} repeat(s) from "
+                  f"{path} (fmt={fmt})", file=sys.stderr)
     return catalogs
 
+
+
+# --------------------------------------------------------------------------- #
+# reporting
+# --------------------------------------------------------------------------- #
+
+def _locus_counts(out: pd.DataFrame, chrom_col: str, pos_col: str) -> tuple[pd.Series, int]:
+    """One verdict per (chrom, pos) locus, not per row.
+
+    Multiple rows can share a locus -- different samples carrying the same
+    insertion, or multiple TRF calls at one site -- and row-level counts
+    overweight whichever loci happen to have more duplicate rows. This takes
+    the most conservative verdict across a locus's rows (same precedence
+    `combine_verdicts` uses across catalogs, just applied across rows here)
+    so each genomic locus is counted exactly once.
+    """
+    ranks = out["novelty"].map(PRECEDENCE)
+    per_locus_rank = ranks.groupby([out[chrom_col], out[pos_col]], sort=False).min()
+    per_locus_status = per_locus_rank.map(BY_RANK)
+    return per_locus_status.value_counts(), len(per_locus_status)
+
+
+def _report(out: pd.DataFrame, args: argparse.Namespace, catalogs: dict) -> None:
+    counts = out["novelty"].value_counts()
+    total = len(out) or 1
+    print(f"[novelty] {args.output}: {len(out):,} row(s), "
+          f"catalogs: {', '.join(catalogs)}", file=sys.stderr)
+    for status in STATUSES:
+        n = int(counts.get(status, 0))
+        print(f"[novelty]   {status:<12} {n:>8,}  ({100 * n / total:5.1f}%)",
+              file=sys.stderr)
+
+    locus_counts, n_loci = _locus_counts(out, args.chrom_col, args.pos_col)
+    print(f"[novelty] per locus ({args.chrom_col}+{args.pos_col}) (n={n_loci:,})",
+          file=sys.stderr)
+    for status in STATUSES:
+        n = int(locus_counts.get(status, 0))
+        print(f"[novelty]   {status:<12} {n:>8,}  ({100 * n / (n_loci or 1):5.1f}%)",
+              file=sys.stderr)
+
+
+def combine_verdicts(statuses: pd.DataFrame) -> pd.Series:
+    """One verdict per row, across catalogs' status columns."""
+    ranks = statuses.apply(lambda column: column.map(PRECEDENCE))
+    return ranks.min(axis=1).map(BY_RANK)   
 
 
 # --------------------------------------------------------------------------- #
@@ -112,7 +190,8 @@ def load_catalogs(specs: list[str], *, equivalence: MotifEquivalence,
 # --------------------------------------------------------------------------- #
 
 def _cmd_query(args: argparse.Namespace) -> int:
-    catalogs = load_catalogs(args.repeats, equivalence=_equivalence(args))
+    catalogs = load_catalogs(args.repeats, equivalence=_equivalence(args),
+                             formats=_parse_formats(args.format))
     tolerance = _tolerance(args)
     point = to_internal(args.pos, args.coord_base)
 
@@ -144,7 +223,8 @@ def _cmd_query(args: argparse.Namespace) -> int:
 
 
 def _cmd_annotate(args: argparse.Namespace) -> int:
-    catalogs = load_catalogs(args.repeats, equivalence=_equivalence(args))
+    catalogs = load_catalogs(args.repeats, equivalence=_equivalence(args),
+                             formats=_parse_formats(args.format))
     tolerance = _tolerance(args)
 
     frame = pd.read_csv(args.input, sep="\t",
@@ -173,15 +253,7 @@ def _cmd_annotate(args: argparse.Namespace) -> int:
     out = pd.concat([frame, pd.DataFrame({"novelty": novelty}), *blocks], axis=1)
     out.to_csv(args.output, sep="\t", index=False, na_rep="NA")
 
-    counts = out["novelty"].value_counts()
-    total = len(out) or 1
-    print(f"[novelty] {args.output}: {len(out):,} row(s), "
-          f"catalogues: {', '.join(catalogs)}", file=sys.stderr)
-    for status in STATUSES:
-        n = int(counts.get(status, 0))
-        print(f"[novelty]   {status:<12} {n:>8,}  ({100 * n / total:5.1f}%)",
-              file=sys.stderr)
-
+    _report(out, args, catalogs)
     return 0
 
 
@@ -193,7 +265,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="novelty-min",
         description="screen tandem repeats against one or more explicitly-"
-                    "given reference catalogues -- core algorithm only")
+                    "given reference catalogs -- core algorithm only")
     parser.add_argument(
         "--coord-base", type=int, choices=(0, 1), default=1,
         help="coordinate base of --pos / the input table's position column "
@@ -212,7 +284,12 @@ def build_parser() -> argparse.ArgumentParser:
     annotate.add_argument("input")
     annotate.add_argument("output")
     annotate.add_argument("--chrom-col", default="chrom")
-    annotate.add_argument("--pos-col", default="ins_coord")
+    annotate.add_argument("--pos-col", default="ins_coord",
+                          help="column with the SV's reference-genome coordinate "
+                               "(default: %(default)s, the sv_trfcaller.py "
+                               "insertion site -- not rep_start/rep_end, which "
+                               "are offsets within the inserted sequence, not "
+                               "reference coordinates)")
     annotate.add_argument("--motif-col", default="motif")
     _add_catalog_args(annotate)
     _add_screen_args(annotate)

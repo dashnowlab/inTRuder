@@ -14,24 +14,12 @@ independent knobs because they are not equally safe:
     are TRF output, so a phase difference is an artefact of the caller rather
     than biology.
 
-*reverse complement* (:attr:`MotifEquivalence.reverse_complement`, OFF by default)
-    ``CAG`` and ``CTG`` are the same double-stranded repeat read from opposite
-    strands. Whether that makes them the same *locus feature* is a judgement
-    call -- for a CAG expansion it usually does, but it also collapses the
-    homopolymers ``A`` and ``T``, which is rarely what you want. Off unless
-    asked for, and :attr:`MotifEquivalence.reverse_complement_bp` can restrict
-    it to motifs long enough for an RC match to mean something.
-
 Two motifs are equivalent when their canonical forms agree under the policy in
 force. Everything looser than that lives in :class:`MotifTolerance`, which is a
 separate object on purpose: *equivalence* decides how the catalogue is keyed and
 is baked into the index, while *tolerance* is a per-query judgement about how far
-off a reference motif may be and still explain the locus. Tolerance has three
+off a reference motif may be and still explain the locus. Tolerance has two
 settings, and :meth:`MotifTolerance.compare` reports which one fired:
-
-``max_edits``
-    A flat edit budget at every motif length. ``0`` (the default) means nothing
-    fuzzy happens at all and ``CAG`` never matches ``CAT``.
 
 ``max_edit_fraction``
     An edit budget proportional to motif length, applied only above
@@ -57,16 +45,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import NamedTuple
 
-# Full IUPAC, not just ACGTN: a catalogue is entitled to write an ambiguous base
-# in a consensus, and translating only ACGTN would *reverse* R/Y/S/W/K/M/B/D/H/V
-# without complementing them, silently turning `ACRYN` into `NYRGT` instead of
-# `NRYGT`. Same table as str-analysis `utils/misc_utils.COMPLEMENT`, plus the
-# lowercase half so a soft-masked motif survives.
-_COMPLEMENT = str.maketrans(
-    "ACGTUNRYSWKMBDHVacgtunryswkmbdhv",
-    "TGCAANYRSWMKVHDBtgcaanyrswmkvhdb",
-)
-
 # Rotational edit distance is O(len^2) per rotation and only meaningful for
 # short units; longer motifs fall back to exact canonical comparison. Tunable
 # per call -- raising it costs time, lowering it turns near misses into novelty.
@@ -90,60 +68,26 @@ class MotifEquivalence:
     """Which transformations of a repeat unit still count as the same repeat.
 
     Period reduction (``CAGCAG`` -> ``CAG``) is not listed because it is always
-    applied. The two that are listed differ in how safe they are, which is why
-    they default differently:
+    applied.
 
     ``circular``
         Treat every rotation of the unit as the same repeat, so ``CAG``, ``AGC``
         and ``GCA`` agree. On by default -- TRF chooses the starting phase
         arbitrarily on both sides of the comparison.
-
-    ``reverse_complement``
-        Additionally treat the unit's reverse complement as the same repeat, so
-        ``CAG`` and ``CTG`` agree. **Off by default**: it also merges the
-        homopolymers ``A`` and ``T``, which loses a real distinction.
-
-        Note that ``GC``/``CG`` and ``AT``/``TA`` are *not* examples of this --
-        they are rotations of one another and collapse under ``circular``.
-
-    ``reverse_complement_bp``
-        Only consider the reverse complement for units at least this long, so
-        the short motifs where an RC match is most likely coincidental keep
-        their strands apart. ``None`` (the default) applies it at every length.
-        It does nothing at all unless ``reverse_complement`` is set.
     """
 
     circular: bool = True
-    reverse_complement: bool = False
-    reverse_complement_bp: int | None = None
-
-    def rc_applies(self, unit: str) -> bool:
-        """Whether the reverse complement of this primitive unit is in scope."""
-        if not self.reverse_complement:
-            return False
-        if self.reverse_complement_bp is None:
-            return True
-        return len(unit) >= self.reverse_complement_bp
 
     def describe(self) -> str:
         """One line naming the policy, for `query` output and log messages."""
         parts = ["period reduction"]
         if self.circular:
             parts.append("rotation")
-        if self.reverse_complement:
-            limit = self.reverse_complement_bp
-            parts.append("reverse complement"
-                         + (f" (>={limit}bp only)" if limit is not None else ""))
         return " + ".join(parts)
 
 
-# What the tool does unless told otherwise: phase-independent, strand-aware.
+# What the tool does unless told otherwise: phase-independent.
 DEFAULT_EQUIVALENCE = MotifEquivalence()
-
-
-def reverse_complement(seq: str) -> str:
-    """Reverse complement of a DNA string."""
-    return seq.translate(_COMPLEMENT)[::-1]
 
 
 def primitive_unit(seq: str) -> str:
@@ -191,24 +135,17 @@ def canonical_motif(motif: str,
                     equivalence: MotifEquivalence = DEFAULT_EQUIVALENCE) -> str:
     """Key under which two motifs are the same repeat, given an equivalence policy.
 
-    Always reduces to the primitive unit; then folds in rotation and reverse
-    complement as ``equivalence`` allows. Two motifs are the same repeat exactly
-    when this returns the same string for both.
+    Always reduces to the primitive unit; then folds in rotation as
+    ``equivalence`` allows. Two motifs are the same repeat exactly when this
+    returns the same string for both.
 
     The key is a pure function of the motif and the policy, which is what lets
-    the catalogue intern it (see :class:`novelty.catalog.RepeatCatalog`). Note
-    that ``reverse_complement_bp`` keys off the unit length, and reverse
-    complementing preserves length, so a pair of RC-equivalent motifs is always
-    on the same side of that threshold.
+    the catalogue intern it (see :class:`novelty.catalog.RepeatCatalog`).
     """
     unit = primitive_unit(motif.strip().upper())
     if not unit:
         return ""
-    forward = least_rotation(unit) if equivalence.circular else unit
-    if not equivalence.rc_applies(unit):
-        return forward
-    rc = reverse_complement(unit)
-    return min(forward, least_rotation(rc) if equivalence.circular else rc)
+    return least_rotation(unit) if equivalence.circular else unit
 
 
 def _edit_distance(a: str, b: str, cutoff: int) -> int:
@@ -241,8 +178,8 @@ def motif_distance(query: str, target: str, cutoff: int,
 
     ``cutoff <= 0`` is the important case: it returns before any edit distance is
     computed, so a one-substitution near miss like ``CAG`` against ``CAT`` is
-    *not* a match. Only a caller that has explicitly asked for fuzziness by
-    raising ``--max-motif-edits`` ever sees one.
+    *not* a match. The only way a caller reaches a positive cutoff is
+    ``--max-motif-edit-fraction`` on a motif longer than :data:`STR_MAX_MOTIF`.
     """
     qc = canonical_motif(query, equivalence)
     tc = canonical_motif(target, equivalence)
@@ -258,16 +195,12 @@ def motif_distance(query: str, target: str, cutoff: int,
     if abs(len(qc) - len(tc)) > cutoff:
         return cutoff + 1
 
-    # Rotations and the reverse complement are folded into the candidate set only
-    # when the policy admits them, so fuzziness can never smuggle in a match that
-    # exact comparison would have rejected on strand or phase grounds.
+    # Rotations are folded into the candidate set only when the policy admits
+    # them, so fuzziness can never smuggle in a match that exact comparison
+    # would have rejected on phase grounds.
     unit = primitive_unit(query.strip().upper())
     candidates = ([unit[i:] + unit[:i] for i in range(len(unit))]
                   if equivalence.circular else [unit])
-    if equivalence.rc_applies(unit):
-        rc = reverse_complement(unit)
-        candidates += ([rc[i:] + rc[:i] for i in range(len(rc))]
-                       if equivalence.circular else [rc])
 
     best = cutoff + 1
     for cand in candidates:
@@ -289,12 +222,11 @@ def motif_distance(query: str, target: str, cutoff: int,
 # Which rule accepted a pair of motifs, reported alongside every verdict so a
 # loosened match never looks like an exact one in the output.
 MATCH_EXACT = "exact"          # same canonical form
-MATCH_FUZZY = "fuzzy"          # within the flat --max-motif-edits budget
 MATCH_VNTR = "vntr"            # within the proportional budget, VNTR lengths only
 MATCH_SUBREPEAT = "subrepeat"  # one motif tiles the other
 MATCH_NONE = ""                # not the same repeat under this tolerance
 
-MATCH_KINDS = (MATCH_EXACT, MATCH_FUZZY, MATCH_VNTR, MATCH_SUBREPEAT)
+MATCH_KINDS = (MATCH_EXACT, MATCH_VNTR, MATCH_SUBREPEAT)
 
 
 class MotifMatch(NamedTuple):
@@ -308,23 +240,22 @@ class MotifMatch(NamedTuple):
         return self.kind != MATCH_NONE
 
 
-def edit_budget(a: str, b: str, max_edits: int,
-                max_edit_fraction: float | None = None, *,
+def edit_budget(a: str, b: str, max_edit_fraction: float | None = None, *,
                 str_max_motif: int = STR_MAX_MOTIF) -> int:
     """How many edits are allowed between two canonical motifs.
 
-    The flat ``max_edits`` applies at every length. ``max_edit_fraction`` adds a
-    budget proportional to the longer motif, but only above ``str_max_motif``:
-    below that a substitution is a real difference between two STRs, and scaling
-    the budget with length would be scaling it with noise. The two combine by
-    taking whichever is larger, so raising one never tightens the other.
+    ``max_edit_fraction`` is a budget proportional to the longer motif, applied
+    only above ``str_max_motif``: below that a substitution is a real
+    difference between two STRs, and scaling the budget with length would be
+    scaling it with noise. ``0`` (the default, no fraction given) means nothing
+    fuzzy happens at all and ``CAG`` never matches ``CAT``.
     """
-    budget = max(int(max_edits), 0)
-    if max_edit_fraction:
-        longest = max(len(a), len(b))
-        if longest > str_max_motif:
-            budget = max(budget, int(longest * max_edit_fraction))
-    return budget
+    if not max_edit_fraction:
+        return 0
+    longest = max(len(a), len(b))
+    if longest > str_max_motif:
+        return int(longest * max_edit_fraction)
+    return 0
 
 
 def tiling_distance(unit: str, target: str, cutoff: int) -> int:
@@ -372,20 +303,17 @@ class MotifTolerance:
     the *same string* and is baked into the catalogue index. Tolerance is decided
     per query and can be swept without rebuilding anything.
 
-    ``max_edits``
-        Flat edit budget at every motif length. ``0`` (the default) means exact
-        canonical matching only.
-
     ``max_edit_fraction``
         Edit budget as a fraction of the longer motif, above
-        :data:`STR_MAX_MOTIF` only. ``None`` disables it.
+        :data:`STR_MAX_MOTIF` only. ``None`` (the default) disables it entirely,
+        meaning exact canonical matching only.
 
     ``min_subrepeat_motif``
         Also accept a motif that tiles the other, when the tiling unit is at
         least this long. ``None`` disables it. It shares the edit budget above,
-        so with both budgets at zero it only accepts a tiling that is exact --
+        so with the budget at zero it only accepts a tiling that is exact --
         and an exact tiling is already handled by period reduction, so this
-        setting does nothing on its own.
+        setting does nothing on its own unless ``max_edit_fraction`` is also set.
 
     ``max_fuzzy_motif``
         Longest motif any of the above is attempted on; beyond it only exact
@@ -393,23 +321,19 @@ class MotifTolerance:
         length.
     """
 
-    max_edits: int = 0
     max_edit_fraction: float | None = None
     min_subrepeat_motif: int | None = None
     max_fuzzy_motif: int = MAX_FUZZY_MOTIF
 
     def __bool__(self) -> bool:
         """Whether anything looser than exact canonical equality is enabled."""
-        return bool(self.max_edits or self.max_edit_fraction
-                    or self.min_subrepeat_motif is not None)
+        return bool(self.max_edit_fraction or self.min_subrepeat_motif is not None)
 
     def describe(self) -> str:
         """One line naming the tolerance, for `query` output and log messages."""
         if not self:
             return "exact canonical match only"
         parts = []
-        if self.max_edits:
-            parts.append(f"<={self.max_edits} edit(s)")
         if self.max_edit_fraction:
             parts.append(f"<={self.max_edit_fraction:g} x motif length "
                          f"(>{STR_MAX_MOTIF}bp motifs only)")
@@ -435,15 +359,12 @@ class MotifTolerance:
         if qc == tc:
             return MotifMatch(MATCH_EXACT, 0)
 
-        budget = edit_budget(qc, tc, self.max_edits, self.max_edit_fraction)
+        budget = edit_budget(qc, tc, self.max_edit_fraction)
         if budget > 0:
             distance = motif_distance(query, target, budget, equivalence,
                                       max_fuzzy_motif=self.max_fuzzy_motif)
             if distance <= budget:
-                # Name the tighter rule when both would have accepted it, so the
-                # output does not blame the VNTR budget for an ordinary near miss.
-                kind = MATCH_FUZZY if distance <= self.max_edits else MATCH_VNTR
-                return MotifMatch(kind, distance)
+                return MotifMatch(MATCH_VNTR, distance)
 
         if self.min_subrepeat_motif is not None:
             unit, whole = (qc, tc) if len(qc) <= len(tc) else (tc, qc)
@@ -451,8 +372,7 @@ class MotifTolerance:
                     and len(whole) <= self.max_fuzzy_motif):
                 # The budget is measured against the tiled length, since that is
                 # how many bases the claim is actually made about.
-                sub_budget = max(budget, edit_budget(whole, whole, self.max_edits,
-                                                     self.max_edit_fraction))
+                sub_budget = max(budget, edit_budget(whole, whole, self.max_edit_fraction))
                 distance = tiling_distance(unit, whole, sub_budget)
                 if distance <= sub_budget:
                     return MotifMatch(MATCH_SUBREPEAT, distance)

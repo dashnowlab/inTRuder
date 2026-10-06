@@ -30,7 +30,6 @@ from intruder.trcore.motifs import (
     least_rotation,
     motif_distance,
     primitive_unit,
-    reverse_complement,
     tiling_distance,
 )
 
@@ -50,11 +49,10 @@ from .platforms import (
     is_url,
     #load_catalogs,
     normalize_chroms,
-    parse_repeats,
+    parse_catalogs,
     read_catalog,
     resolve_source,
 )
-from .verdicts import PRECEDENCE, combine_verdicts
 
 __all__ = [
     "ANNOTATION_COLUMNS",
@@ -63,7 +61,6 @@ __all__ = [
     "DEFAULT_TOLERANCE",
     "MATCH_KINDS",
     "MAX_FUZZY_MOTIF",
-    "PRECEDENCE",
     "STATUSES",
     "STR_MAX_MOTIF",
     "UNSCREENED",
@@ -76,7 +73,6 @@ __all__ = [
     "Verdict",
     "canonical_motif",
     "canonical_motifs",
-    "combine_verdicts",
     "edit_budget",
     "interval_distance",
     "is_url",
@@ -85,11 +81,10 @@ __all__ = [
     "motif_distance",
     "normalize_chrom",
     "normalize_chroms",
-    "parse_repeats",
+    "parse_catalogs",
     "primitive_unit",
     "read_catalog",
     "resolve_source",
-    "reverse_complement",
     "tiling_distance",
     "to_external",
     "to_internal",

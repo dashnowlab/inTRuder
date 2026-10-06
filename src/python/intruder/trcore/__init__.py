@@ -28,7 +28,7 @@ from .motifs import (
     DEFAULT_EQUIVALENCE,
     DEFAULT_TOLERANCE,
     MATCH_EXACT,
-    MATCH_FUZZY,
+    #MATCH_FUZZY,
     MATCH_KINDS,
     MATCH_NONE,
     MATCH_SUBREPEAT,
@@ -43,7 +43,7 @@ from .motifs import (
     least_rotation,
     motif_distance,
     primitive_unit,
-    reverse_complement,
+    #reverse_complement,
     tiling_distance,
 )
 

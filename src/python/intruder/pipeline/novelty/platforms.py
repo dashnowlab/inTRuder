@@ -1,12 +1,12 @@
-"""Reading reference tandem-repeat catalogues, and loading one or more of them.
+"""Reading reference tandem-repeat catalogs, and loading one or more of them.
 
 Every catalogue is normalised to one schema (``chrom, start, end, motif`` plus
 whatever of :data:`ANNOTATION_COLUMNS` it carries) -- this is what
 :mod:`novelty.catalog` builds its interval index from.
 
-Only plain BED4 (``chrom start end motif``) is read here; no format sniffing,
-no UCSC ``simpleRepeat``/TRGT readers. A catalogue is given explicitly, as a
-local path or a URL -- no platform registry, no named/bundled catalogues, no
+Only plain BED4 (``chrom start end motif``) or UCSC ``simpleRepeat`` is read here; 
+no format sniffing. A catalogue is given explicitly, as a
+local path or a URL -- no platform registry, no named/bundled catalogs, no
 auto-discovery.
 """
 
@@ -22,6 +22,7 @@ import pandas as pd
 from intruder.trcore.coords import normalize_chrom
 from intruder.trcore.fetch import download_file
 from intruder.trcore.motifs import DEFAULT_EQUIVALENCE, MotifEquivalence, canonical_motif
+from intruder.trcore.paths import repo_root
 
 # The normalised schema every reader produces.
 CATALOG_COLUMNS = ("chrom", "start", "end", "motif")
@@ -34,11 +35,10 @@ CATALOG_COLUMNS = ("chrom", "start", "end", "motif")
 #   per_indel       % indel between the perfect repeat and the genome
 ANNOTATION_COLUMNS = ("period", "copy_num", "consensus_size", "per_match", "per_indel")
 
-DOWNLOAD_DIR = Path(".novelty_downloads")
-
+DOWNLOAD_DIR = Path(repo_root(__file__) / "data" / "novelty")
 
 # --------------------------------------------------------------------------- #
-# normalization -- what catalog.py's RepeatCatalog.screen_frame calls
+# normalization
 # --------------------------------------------------------------------------- #
 
 def canonical_motifs(values,
@@ -69,7 +69,7 @@ def normalize_chroms(values) -> pd.Series:
 
 
 # --------------------------------------------------------------------------- #
-# reading -- BED4 only
+# reading
 # --------------------------------------------------------------------------- #
 
 def _is_gzip(path: Path) -> bool:
@@ -111,16 +111,61 @@ def read_bed(path: str | Path) -> pd.DataFrame:
     return _finalize(frame, path)
 
 
+# UCSC's raw simpleRepeat.txt(.gz) table dump: no header, these columns in this
+# order. `usecols` below only reads this many even if a release adds trailing
+# columns (some include a 17th `sequence` column).
+_SIMPLEREPEAT_COLUMNS = ("bin", "chrom", "chromStart", "chromEnd", "name",
+                         "period", "copyNum", "consensusSize", "perMatch",
+                         "perIndel", "score", "A", "C", "G", "T", "entropy")
+
+
+def read_simplerepeat(path: str | Path) -> pd.DataFrame:
+    """Read UCSC's raw ``simpleRepeat.txt(.gz)`` table dump, as downloaded from
+    e.g. ``hgdownload.soe.ucsc.edu/goldenPath/<assembly>/database/simpleRepeat.txt.gz``.
+
+    Not BED: no header, starts with a ``bin`` indexing column UCSC uses
+    internally, and the repeat unit is ``name`` rather than a 4th BED column.
+    Converted here into the same normalised schema :func:`read_bed` produces,
+    picking up ``period``/``copyNum``/``consensusSize``/``perMatch``/``perIndel``
+    as the catalogue's :data:`ANNOTATION_COLUMNS`.
+    """
+    path = Path(path)
+    frame = pd.read_csv(
+        path, sep="\t", compression="gzip" if _is_gzip(path) else None,
+        header=None, comment="#", usecols=range(len(_SIMPLEREPEAT_COLUMNS)),
+        names=_SIMPLEREPEAT_COLUMNS,
+        dtype={"chrom": "string", "name": "string"}, na_filter=False,
+    )
+    renamed = pd.DataFrame({
+        "chrom": frame["chrom"],
+        "start": frame["chromStart"],
+        "end": frame["chromEnd"],
+        "motif": frame["name"],
+        "period": frame["period"],
+        "copy_num": frame["copyNum"],
+        "consensus_size": frame["consensusSize"],
+        "per_match": frame["perMatch"],
+        "per_indel": frame["perIndel"],
+    })
+    return _finalize(renamed, path)
+
+
 def read_catalog(path: str | Path, fmt: str = "bed") -> pd.DataFrame:
-    """Read a catalogue file into the normalised schema. Only ``bed`` is supported."""
-    if fmt != "bed":
-        raise ValueError(f"unsupported catalogue format {fmt!r}; only 'bed' is "
-                         f"supported here (no format sniffing/registry)")
-    return read_bed(path)
+    """Read a catalogue file into the normalised schema.
+
+    ``fmt`` is explicit, never sniffed: ``"bed"`` (plain BED4, the default) or
+    ``"ucsc"`` (a raw UCSC ``simpleRepeat.txt(.gz)`` table dump).
+    """
+    if fmt == "bed":
+        return read_bed(path)
+    if fmt == "ucsc":
+        return read_simplerepeat(path)
+    raise ValueError(f"unsupported catalogue format {fmt!r}; use 'bed' or 'ucsc' "
+                     f"(no format sniffing/registry)")
 
 
 # --------------------------------------------------------------------------- #
-# multi-source loading -- explicit path or URL, no registry, no auto-discovery
+# multi-source loading -- explicit path or URL
 # --------------------------------------------------------------------------- #
 
 def is_url(spec: str) -> bool:
@@ -142,7 +187,7 @@ def resolve_source(name: str, source: str) -> Path:
     return download_file(source, target, label="novelty")
 
 
-def parse_repeats(specs: list[str]) -> dict[str, str]:
+def parse_catalogs(specs: list[str]) -> dict[str, str]:
     """``NAME=PATH`` or ``NAME=URL`` specs, in the order given; names unique."""
     sources: dict[str, str] = {}
     for spec in specs:
