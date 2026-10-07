@@ -41,7 +41,7 @@ from .platforms import parse_catalogs, resolve_source, read_catalog
 # verdict wins when catalogs disagree: a locus is only novel if none of
 # them has it. unscreened ranks last since it's an absence of coverage, not
 # an opinion -- any catalogue with an actual verdict outranks it.
-PRECEDENCE = {status: rank for rank, status in enumerate(STATUSES)}
+_PRECEDENCE = {status: rank for rank, status in enumerate(STATUSES)}
 BY_RANK = dict(enumerate(STATUSES))
 
 
@@ -154,7 +154,7 @@ def _locus_counts(out: pd.DataFrame, chrom_col: str, pos_col: str) -> tuple[pd.S
     `combine_verdicts` uses across catalogs, just applied across rows here)
     so each genomic locus is counted exactly once.
     """
-    ranks = out["novelty"].map(PRECEDENCE)
+    ranks = out["novelty"].map(_PRECEDENCE)
     per_locus_rank = ranks.groupby([out[chrom_col], out[pos_col]], sort=False).min()
     per_locus_status = per_locus_rank.map(BY_RANK)
     return per_locus_status.value_counts(), len(per_locus_status)
@@ -181,7 +181,7 @@ def _report(out: pd.DataFrame, args: argparse.Namespace, catalogs: dict) -> None
 
 def combine_verdicts(statuses: pd.DataFrame) -> pd.Series:
     """One verdict per row, across catalogs' status columns."""
-    ranks = statuses.apply(lambda column: column.map(PRECEDENCE))
+    ranks = statuses.apply(lambda column: column.map(_PRECEDENCE))
     return ranks.min(axis=1).map(BY_RANK)   
 
 
@@ -217,7 +217,7 @@ def _cmd_query(args: argparse.Namespace) -> int:
                   f"{verdict.best.distance}bp away)")
 
     if len(verdicts) > 1:
-        combined = min(verdicts.values(), key=lambda v: PRECEDENCE[v.status])
+        combined = min(verdicts.values(), key=lambda v: _PRECEDENCE[v.status])
         print(f"  combined : {combined.status}")
     return 0
 

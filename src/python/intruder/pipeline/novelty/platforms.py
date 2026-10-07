@@ -1,12 +1,12 @@
-"""Reading reference tandem-repeat catalogs, and loading one or more of them.
+"""Reading reference tandem-repeat catalogues, and loading one or more of them.
 
 Every catalogue is normalised to one schema (``chrom, start, end, motif`` plus
 whatever of :data:`ANNOTATION_COLUMNS` it carries) -- this is what
 :mod:`novelty.catalog` builds its interval index from.
 
-Only plain BED4 (``chrom start end motif``) or UCSC ``simpleRepeat`` is read here; 
-no format sniffing. A catalogue is given explicitly, as a
-local path or a URL -- no platform registry, no named/bundled catalogs, no
+Only plain BED4 (``chrom start end motif``) is read here; no format sniffing,
+no UCSC ``simpleRepeat``/TRGT readers. A catalogue is given explicitly, as a
+local path or a URL -- no platform registry, no named/bundled catalogues, no
 auto-discovery.
 """
 
@@ -37,8 +37,9 @@ ANNOTATION_COLUMNS = ("period", "copy_num", "consensus_size", "per_match", "per_
 
 DOWNLOAD_DIR = Path(repo_root(__file__) / "data" / "novelty")
 
+
 # --------------------------------------------------------------------------- #
-# normalization
+# normalization -- what catalog.py's RepeatCatalog.screen_frame calls
 # --------------------------------------------------------------------------- #
 
 def canonical_motifs(values,
@@ -69,7 +70,7 @@ def normalize_chroms(values) -> pd.Series:
 
 
 # --------------------------------------------------------------------------- #
-# reading
+# reading -- BED4 only
 # --------------------------------------------------------------------------- #
 
 def _is_gzip(path: Path) -> bool:
@@ -112,11 +113,14 @@ def read_bed(path: str | Path) -> pd.DataFrame:
 
 
 # UCSC's raw simpleRepeat.txt(.gz) table dump: no header, these columns in this
-# order. `usecols` below only reads this many even if a release adds trailing
-# columns (some include a 17th `sequence` column).
+# order. `name` is NOT the repeat unit -- it's always the literal string "trf"
+# (a label meaning "Tandem Repeats Finder produced this row"), a historical
+# artefact of the track's origin. The actual consensus sequence is the last
+# column, `sequence`.
 _SIMPLEREPEAT_COLUMNS = ("bin", "chrom", "chromStart", "chromEnd", "name",
                          "period", "copyNum", "consensusSize", "perMatch",
-                         "perIndel", "score", "A", "C", "G", "T", "entropy")
+                         "perIndel", "score", "A", "C", "G", "T", "entropy",
+                         "sequence")
 
 
 def read_simplerepeat(path: str | Path) -> pd.DataFrame:
@@ -124,23 +128,24 @@ def read_simplerepeat(path: str | Path) -> pd.DataFrame:
     e.g. ``hgdownload.soe.ucsc.edu/goldenPath/<assembly>/database/simpleRepeat.txt.gz``.
 
     Not BED: no header, starts with a ``bin`` indexing column UCSC uses
-    internally, and the repeat unit is ``name`` rather than a 4th BED column.
-    Converted here into the same normalised schema :func:`read_bed` produces,
-    picking up ``period``/``copyNum``/``consensusSize``/``perMatch``/``perIndel``
-    as the catalogue's :data:`ANNOTATION_COLUMNS`.
+    internally, and the repeat unit is the ``sequence`` column, not ``name``
+    (which is always the literal string ``"trf"``, not a motif). Converted here
+    into the same normalised schema :func:`read_bed` produces, picking up
+    ``period``/``copyNum``/``consensusSize``/``perMatch``/``perIndel`` as the
+    catalogue's :data:`ANNOTATION_COLUMNS`.
     """
     path = Path(path)
     frame = pd.read_csv(
         path, sep="\t", compression="gzip" if _is_gzip(path) else None,
         header=None, comment="#", usecols=range(len(_SIMPLEREPEAT_COLUMNS)),
         names=_SIMPLEREPEAT_COLUMNS,
-        dtype={"chrom": "string", "name": "string"}, na_filter=False,
+        dtype={"chrom": "string", "sequence": "string"}, na_filter=False,
     )
     renamed = pd.DataFrame({
         "chrom": frame["chrom"],
         "start": frame["chromStart"],
         "end": frame["chromEnd"],
-        "motif": frame["name"],
+        "motif": frame["sequence"],
         "period": frame["period"],
         "copy_num": frame["copyNum"],
         "consensus_size": frame["consensusSize"],
@@ -165,7 +170,7 @@ def read_catalog(path: str | Path, fmt: str = "bed") -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------- #
-# multi-source loading -- explicit path or URL
+# multi-source loading -- explicit path or URL, no registry, no auto-discovery
 # --------------------------------------------------------------------------- #
 
 def is_url(spec: str) -> bool:
