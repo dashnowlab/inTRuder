@@ -68,42 +68,72 @@ process FIND_TRS {
 // ---------------------------------------------------------------------
 // 01.1 - Add alt allele sequence compressibility score (optional)
 // ---------------------------------------------------------------------
-process ANNOTATE_COMPRESSIBILITY {
+// process ANNOTATE_COMPRESSIBILITY {
 
-    // publishDir copies this process's output to a results folder,
-    // so it's not just buried in Nextflow's internal work/ directory
-    // TODO: change to output in corresponding parent directory
-    publishDir "results/011_annotate_compressibility", mode: "copy"
+//     // publishDir copies this process's output to a results folder,
+//     // so it's not just buried in Nextflow's internal work/ directory
+//     // TODO: change to output in corresponding parent directory
+//     publishDir "results/011_annotate_compressibility", mode: "copy"
+
+//     input:
+//     path vcf_file
+
+//     output:
+//     path "*_comp.vcf"
+
+//     script:
+//     // Calls the `compression` console script the same way FIND_NOVEL calls
+//     // `uv run novelty`. The annotator itself came in with #81 and currently
+//     // sits at src/python/intruder/compression/add_compression.py; a
+//     // follow-up moves it to intruder/pipeline/compression/annotate.py and
+//     // registers it in [project.scripts]. Targeting the console script rather
+//     // than a file path means that move does not break this process.
+//     //
+//     // Nothing is read from the host source tree, so this resolves from
+//     // whatever directory Nextflow stages the task in - the old relative
+//     // "../src/python/..." path never could have.
+//     //
+//     // simpleName strips the directory and every extension, so
+//     // sample.merged.vcf -> sample_comp.vcf, matching the output glob below.
+//     // Bash-style ${var%.vcf} does NOT work here: Nextflow interpolates
+//     // ${...} as Groovy before the shell ever sees it.
+//     """
+//     uv run compression -i ${vcf_file} -o ${vcf_file.simpleName}_comp.vcf
+//     """
+// }
+
+
+// ---------------------------------------------------------------------
+// 02A - FILTER_BY_COVERAGE
+// Filters out SVs where less than 80% of the insertion is covered by
+// tandem repeat (using novelty's insertion_purity column, 0-1 scale).
+// Always runs right after 02A whenever novelty is on - no separate flag.
+// ---------------------------------------------------------------------
+process FILTER_BY_COVERAGE {
+    publishDir "results/02_novelty", mode: "copy"
 
     input:
-    path vcf_file
+    path novelty_tsv
 
     output:
-    path "*_comp.vcf"
+    path "novelty_filtered.tsv", emit: filtered
+    path "novelty_filtered.stats.tsv", emit: stats
 
     script:
-    // Calls the `compression` console script the same way FIND_NOVEL calls
-    // `uv run novelty`. The annotator itself came in with #81 and currently
-    // sits at src/python/intruder/compression/add_compression.py; a
-    // follow-up moves it to intruder/pipeline/compression/annotate.py and
-    // registers it in [project.scripts]. Targeting the console script rather
-    // than a file path means that move does not break this process.
-    //
-    // Nothing is read from the host source tree, so this resolves from
-    // whatever directory Nextflow stages the task in - the old relative
-    // "../src/python/..." path never could have.
-    //
-    // simpleName strips the directory and every extension, so
-    // sample.merged.vcf -> sample_comp.vcf, matching the output glob below.
-    // Bash-style ${var%.vcf} does NOT work here: Nextflow interpolates
-    // ${...} as Groovy before the shell ever sees it.
     """
-    uv run compression -i ${vcf_file} -o ${vcf_file.simpleName}_comp.vcf
+    python3 /opt/scripts/filter_ins_trf.py \
+        -i ${novelty_tsv} \
+        -o novelty_filtered.tsv \
+        -s novelty_filtered.stats.tsv \
+        --min-repeat-coverage 0.8 \
+        --min-depth 0
     """
 }
 
+
+
 // ---------------------------------------------------------------------
-// 02A - NOVELTY (optional)
+// 02B - NOVELTY (optional)
 // ---------------------------------------------------------------------
 process FIND_NOVEL {
     // TODO: change to output in corresponding parent directory
@@ -132,53 +162,25 @@ process FIND_NOVEL {
 
 
 // ---------------------------------------------------------------------
-// 02B - FILTER_BY_COVERAGE
-// Filters out SVs where less than 80% of the insertion is covered by
-// tandem repeat (using novelty's insertion_purity column, 0-1 scale).
-// Always runs right after 02A whenever novelty is on - no separate flag.
-// ---------------------------------------------------------------------
-process FILTER_BY_COVERAGE {
-    publishDir "results/02_novelty", mode: "copy"
-
-    input:
-    path novelty_tsv
-
-    output:
-    path "novelty_filtered.tsv", emit: filtered
-    path "novelty_filtered.stats.tsv", emit: stats
-
-    script:
-    """
-    python3 /opt/scripts/filter_ins_trf.py \
-        -i ${novelty_tsv} \
-        -o novelty_filtered.tsv \
-        -s novelty_filtered.stats.tsv \
-        --min-repeat-coverage 0.8 \
-        --min-depth 0
-    """
-}
-
-
-// ---------------------------------------------------------------------
 // 03 - ANNOTATION (optional) - PLACEHOLDER
 // Takes the ORIGINAL vcf (or a BED derived from it) - not 01's output.
 // TODO: replace with the real AnnotSV command once ready.
 // ---------------------------------------------------------------------
-process ANNOTATE {
-    // TODO: change to output in corresponding parent directory
-    publishDir "results/03_annotation", mode: "copy"
+// process ANNOTATE {
+//     // TODO: change to output in corresponding parent directory
+//     publishDir "results/03_annotation", mode: "copy"
 
-    input:
-    path vcf_or_bed
+//     input:
+//     path vcf_or_bed
 
-    output:
-    path "annotation_output.tsv"
+//     output:
+//     path "annotation_output.tsv"
 
-    script:
-    """
-    echo "TODO: real AnnotSV command goes here" > annotation_output.tsv
-    """
-}
+//     script:
+//     """
+//     echo "TODO: real AnnotSV command goes here" > annotation_output.tsv
+//     """
+// }
 
 
 // ---------------------------------------------------------------------
@@ -251,25 +253,25 @@ process CALCULATE_SENSITIVITY {
 // ---------------------------------------------------------------------
 // 05 - MERGE (01+02+03 ONLY - validation removed, it's independent
 // ---------------------------------------------------------------------
-process MERGE {
-    publishDir "results/05_merge", mode: "copy"
+// process MERGE {
+//     publishDir "results/05_merge", mode: "copy"
 
-    input:
-    path trf_tsv, stageAs: 'find_trs_input.tsv'
-    path novelty_tsv, stageAs: 'novelty_input.tsv'
-    path annotation_tsv, stageAs: 'annotation_input.tsv'
+//     input:
+//     path trf_tsv, stageAs: 'find_trs_input.tsv'
+//     path novelty_tsv, stageAs: 'novelty_input.tsv'
+//     path annotation_tsv, stageAs: 'annotation_input.tsv'
 
-    output:
-    path "merged_output.tsv"
+//     output:
+//     path "merged_output.tsv"
 
-    script:
-    """
-    echo "TODO: real merge script goes here, keyed on CHROM_POS_END_SVTYPE_SVLEN" > merged_output.tsv
-    echo "01 (always): ${trf_tsv}"
-    echo "02 (novelty): ${novelty_tsv}"
-    echo "03 (annotation): ${annotation_tsv}"
-    """
-}
+//     script:
+//     """
+//     echo "TODO: real merge script goes here, keyed on CHROM_POS_END_SVTYPE_SVLEN" > merged_output.tsv
+//     echo "01 (always): ${trf_tsv}"
+//     echo "02 (novelty): ${novelty_tsv}"
+//     echo "03 (annotation): ${annotation_tsv}"
+//     """
+// }
 
 
 // ---------------------------------------------------------------------
@@ -318,21 +320,23 @@ workflow {
     // --- Baseline: find TRs in the insertions (always runs)---
     FIND_TRS(vcf_ch)
 
-    // --- 02: optional, branches off 01's output ---
+
+    // --- 02: optional, branches off the ORIGINAL vcf, not 01's output ---
+    if (params.run_annotation) {
+        ANNOTATE(vcf_ch)
+        annotation_out = ANNOTATE.out
+    } else {
+        annotation_out = Channel.fromPath("${projectDir}/assets/NO_FILE")
+    }
+
+
+    // --- 03: optional, branches off 01's output ---
     if (params.run_novelty) {
     FIND_NOVEL(FIND_TRS.out)
     FILTER_BY_COVERAGE(FIND_NOVEL.out)
     novelty_out = FILTER_BY_COVERAGE.out.filtered
     } else {
         novelty_out = Channel.fromPath("${projectDir}/assets/NO_FILE")
-    }
-
-    // --- 03: optional, branches off the ORIGINAL vcf, not 01's output ---
-    if (params.run_annotation) {
-        ANNOTATE(vcf_ch)
-        annotation_out = ANNOTATE.out
-    } else {
-        annotation_out = Channel.fromPath("${projectDir}/assets/NO_FILE")
     }
 
     // --- 04: optional, branches off 01's output + a catalogue BED ---
