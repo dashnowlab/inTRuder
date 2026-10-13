@@ -36,7 +36,7 @@ import numpy as np
 import pandas as pd
 
 from intruder.trcore.coords import interval_distance, normalize_chrom
-from intruder.trcore.motifs import (
+from .motifs import (
     DEFAULT_EQUIVALENCE,
     DEFAULT_TOLERANCE,
     MATCH_NONE,
@@ -267,14 +267,6 @@ class RepeatCatalog:
             out.append(np.asarray(hits, dtype=np.int64) if hits else empty)
         return out
 
-    def overlapping(self, chrom: str, start: int, end: int) -> list[ReferenceRepeat]:
-        """Repeats intersecting the 0-based half-open interval ``[start, end)``."""
-        chrom = normalize_chrom(chrom)
-        if end <= start:                 # zero-width query: probe a single base
-            end = start + 1
-        (indices,) = self._overlap_batch(chrom, np.array([start]), np.array([end]))
-        return [self._record(chrom, int(i)) for i in indices]
-
     # -- screening ---------------------------------------------------------- #
 
     def _best_hit(self, indices: np.ndarray, chrom: str, point: int, motif: str,
@@ -306,6 +298,7 @@ class RepeatCatalog:
             # Reporting it as novel_locus would manufacture novelty for every
             # alt/random/decoy contig: TRExplorer v2 carries 25 contigs where
             # UCSC simpleRepeat carries 702.
+
             return UNSCREENED
         if not n_nearby:
             return "novel_locus"
@@ -313,32 +306,6 @@ class RepeatCatalog:
             return "known"
         return "novel_motif"
 
-    def covers(self, chrom: str) -> bool:
-        """Whether this catalogue has any rows on the given contig."""
-        return normalize_chrom(chrom) in self._bounds
-
-    def screen(self, chrom: str, point: int, motif: str, *, window: int = 10,
-               tolerance: MotifTolerance = DEFAULT_TOLERANCE) -> Verdict:
-        """Classify a 0-based reference coordinate + motif as known or novel.
-
-        ``window`` is how far off the coordinates may be, in bp: SV breakpoints
-        are rarely placed exactly on the annotated repeat boundary, so a repeat
-        counts as "here" if it comes within ``window`` bases of ``point``.
-        """
-        chrom = normalize_chrom(chrom)
-        canonical = canonical_motif(motif, self.equivalence)
-        (indices,) = self._overlap_batch(
-            chrom, np.array([point - window]), np.array([point + window + 1]))
-        best = self._best_hit(indices, chrom, point, motif, canonical, tolerance)
-        return Verdict(
-            chrom=chrom,
-            point=point,
-            motif=motif.strip().upper(),
-            canonical=canonical,
-            status=self._status(chrom, len(indices), best),
-            n_nearby=len(indices),
-            best=best,
-        )
 
     def screen_frame(self, chroms, points, motifs, *, window: int = 10,
                      tolerance: MotifTolerance = DEFAULT_TOLERANCE,

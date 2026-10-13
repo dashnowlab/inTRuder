@@ -24,7 +24,7 @@ data live with the step that needs them (see ``novelty.platforms``).
 
 from .coords import interval_distance, normalize_chrom, to_external, to_internal
 from .fetch import cache_root, download_bytes, download_file
-from .motifs import (
+from ..pipeline.novelty.motifs import (
     DEFAULT_EQUIVALENCE,
     DEFAULT_TOLERANCE,
     MATCH_EXACT,
@@ -33,7 +33,7 @@ from .motifs import (
     MATCH_NONE,
     MATCH_SUBREPEAT,
     MATCH_VNTR,
-    MAX_FUZZY_MOTIF,
+    #MAX_FUZZY_MOTIF,
     STR_MAX_MOTIF,
     MotifEquivalence,
     MotifMatch,
@@ -56,7 +56,7 @@ __all__ = [
     "MATCH_NONE",
     "MATCH_SUBREPEAT",
     "MATCH_VNTR",
-    "MAX_FUZZY_MOTIF",
+    #"MAX_FUZZY_MOTIF",
     "STR_MAX_MOTIF",
     "MotifEquivalence",
     "MotifMatch",

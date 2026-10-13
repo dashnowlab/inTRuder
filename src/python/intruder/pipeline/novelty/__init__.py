@@ -16,11 +16,10 @@ reference catalogues (BED4 files, local or URL).
 """
 
 from intruder.trcore.coords import interval_distance, normalize_chrom, to_external, to_internal
-from intruder.trcore.motifs import (
+from .motifs import (
     DEFAULT_EQUIVALENCE,
     DEFAULT_TOLERANCE,
     MATCH_KINDS,
-    MAX_FUZZY_MOTIF,
     STR_MAX_MOTIF,
     MotifEquivalence,
     MotifMatch,
@@ -60,7 +59,6 @@ __all__ = [
     "DEFAULT_EQUIVALENCE",
     "DEFAULT_TOLERANCE",
     "MATCH_KINDS",
-    "MAX_FUZZY_MOTIF",
     "STATUSES",
     "STR_MAX_MOTIF",
     "UNSCREENED",

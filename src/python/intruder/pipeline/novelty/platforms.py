@@ -21,7 +21,7 @@ import pandas as pd
 
 from intruder.trcore.coords import normalize_chrom
 from intruder.trcore.fetch import download_file
-from intruder.trcore.motifs import DEFAULT_EQUIVALENCE, MotifEquivalence, canonical_motif
+from .motifs import DEFAULT_EQUIVALENCE, MotifEquivalence, canonical_motif
 from intruder.trcore.paths import repo_root
 
 # The normalised schema every reader produces.
@@ -35,11 +35,20 @@ CATALOG_COLUMNS = ("chrom", "start", "end", "motif")
 #   per_indel       % indel between the perfect repeat and the genome
 ANNOTATION_COLUMNS = ("period", "copy_num", "consensus_size", "per_match", "per_indel")
 
+# UCSC's raw simpleRepeat.txt(.gz) table dump: no header, these columns in this
+# order
+_SIMPLEREPEAT_COLUMNS = ("bin", "chrom", "chromStart", "chromEnd", "name",
+                         "period", "copyNum", "consensusSize", "perMatch",
+                         "perIndel", "score", "A", "C", "G", "T", "entropy",
+                         "sequence")
+
+
 DOWNLOAD_DIR = Path(repo_root(__file__) / "data" / "novelty")
 
 
+
 # --------------------------------------------------------------------------- #
-# normalization -- what catalog.py's RepeatCatalog.screen_frame calls
+# normalization
 # --------------------------------------------------------------------------- #
 
 def canonical_motifs(values,
@@ -70,7 +79,7 @@ def normalize_chroms(values) -> pd.Series:
 
 
 # --------------------------------------------------------------------------- #
-# reading -- BED4 only
+# reading
 # --------------------------------------------------------------------------- #
 
 def _is_gzip(path: Path) -> bool:
@@ -100,6 +109,23 @@ def _finalize(frame: pd.DataFrame, path: Path) -> pd.DataFrame:
     return out
 
 
+def read_catalog(path: str | Path, fmt: str = "bed") -> pd.DataFrame:
+    """Read a catalogue file into the normalised schema.
+
+    ``fmt`` is explicit, never sniffed: ``"bed"`` (plain BED4, the default) or
+    ``"ucsc"`` (a raw UCSC ``simpleRepeat.txt(.gz)`` table dump).
+    """
+    if fmt == "bed":
+        return read_bed(path)
+    if fmt == "ucsc":
+        return read_simplerepeat(path)
+    if fmt == "strchive":
+        return read_strchive(path)
+    raise ValueError(f"unsupported catalogue format {fmt!r}; use 'bed' or 'ucsc' "
+                     f"(no format sniffing/registry)")
+
+
+
 def read_bed(path: str | Path) -> pd.DataFrame:
     """Read a BED4 catalogue: ``chrom start end motif``, extra columns ignored."""
     path = Path(path)
@@ -112,24 +138,12 @@ def read_bed(path: str | Path) -> pd.DataFrame:
     return _finalize(frame, path)
 
 
-# UCSC's raw simpleRepeat.txt(.gz) table dump: no header, these columns in this
-# order. `name` is NOT the repeat unit -- it's always the literal string "trf"
-# (a label meaning "Tandem Repeats Finder produced this row"), a historical
-# artefact of the track's origin. The actual consensus sequence is the last
-# column, `sequence`.
-_SIMPLEREPEAT_COLUMNS = ("bin", "chrom", "chromStart", "chromEnd", "name",
-                         "period", "copyNum", "consensusSize", "perMatch",
-                         "perIndel", "score", "A", "C", "G", "T", "entropy",
-                         "sequence")
-
-
 def read_simplerepeat(path: str | Path) -> pd.DataFrame:
     """Read UCSC's raw ``simpleRepeat.txt(.gz)`` table dump, as downloaded from
     e.g. ``hgdownload.soe.ucsc.edu/goldenPath/<assembly>/database/simpleRepeat.txt.gz``.
 
     Not BED: no header, starts with a ``bin`` indexing column UCSC uses
-    internally, and the repeat unit is the ``sequence`` column, not ``name``
-    (which is always the literal string ``"trf"``, not a motif). Converted here
+    internally, and the repeat unit is the ``sequence`` column. Converted here
     into the same normalised schema :func:`read_bed` produces, picking up
     ``period``/``copyNum``/``consensusSize``/``perMatch``/``perIndel`` as the
     catalogue's :data:`ANNOTATION_COLUMNS`.
@@ -155,22 +169,33 @@ def read_simplerepeat(path: str | Path) -> pd.DataFrame:
     return _finalize(renamed, path)
 
 
-def read_catalog(path: str | Path, fmt: str = "bed") -> pd.DataFrame:
-    """Read a catalogue file into the normalised schema.
+def read_strchive(path:str | Path) -> pd.DataFrame:
 
-    ``fmt`` is explicit, never sniffed: ``"bed"`` (plain BED4, the default) or
-    ``"ucsc"`` (a raw UCSC ``simpleRepeat.txt(.gz)`` table dump).
-    """
-    if fmt == "bed":
-        return read_bed(path)
-    if fmt == "ucsc":
-        return read_simplerepeat(path)
-    raise ValueError(f"unsupported catalogue format {fmt!r}; use 'bed' or 'ucsc' "
-                     f"(no format sniffing/registry)")
+    path = Path(path)
+    frame = pd.read_json(
+        path, compression="gzip" if _is_gzip(path) else None,
+        dtype={"chrom": "string" }
+    )
+    renamed = pd.DataFrame({
+        "chrom": frame["chrom"],
+        "start": frame["start_hg38"],
+        "end": frame["stop_hg38"],
+        "motif": frame["pathogenic_motif_reference_orientation"],
+        "period": frame["motif_len"],
+        "copy_num": frame["ref_copies"],
+    })
+
+    # one row per motif; the locus's other columns are repeated on each row
+    renamed = renamed.explode("motif", ignore_index=True)
+
+    # convert motif to string; missing/empty lists become ""
+    renamed["motif"] = renamed["motif"].fillna("").astype(str)
+
+    return _finalize(renamed, path)
 
 
 # --------------------------------------------------------------------------- #
-# multi-source loading -- explicit path or URL, no registry, no auto-discovery
+# multi-source loading -- explicit path or URL
 # --------------------------------------------------------------------------- #
 
 def is_url(spec: str) -> bool:

@@ -2,24 +2,19 @@
 
 Just argument parsing and orchestration: turning flags into the domain
 objects (`MotifEquivalence`, `MotifTolerance`), calling into
-`platforms` to load catalogs and `catalog.RepeatCatalog` to screen, and
+`platforms` to load catalogues and `catalog.RepeatCatalog` to screen, and
 `verdicts` to combine results. No source resolution, no download, no
 verdict-combining logic lives here -- see those modules for that.
 
-    # one locus, one catalogue
-    python -m intruder.pipeline.novelty query \\
-        --repeats ucsc=catalog.bed --chrom chr1 --pos 10772 --motif GC
-
-    # one locus, two catalogs (a local file and a URL)
-    python -m intruder.pipeline.novelty query \\
+    # a whole table, against two catalogues (a local file and a URL)
+    python -m intruder.pipeline.novelty annotate \\
         --repeats ucsc=catalog.bed \\
         --repeats trexplorer=https://example.org/trexplorer.bed.gz \\
-        --chrom chr1 --pos 10772 --motif GC
+        input.tsv output.tsv
 
-    # a whole table, against both
+    # the same, against both local files
     python -m intruder.pipeline.novelty annotate \\
-        --repeats ucsc=https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/simpleRepeat.txt.gz --format ucsc=ucsc \\
-        --repeats trexplorer=trexplorer.bed.gz \\
+        --repeats ucsc=catalog.bed --repeats trexplorer=trexplorer.bed.gz \\
         input.tsv output.tsv
 """
 
@@ -31,17 +26,17 @@ import sys
 import pandas as pd
 
 from intruder.trcore.coords import to_external, to_internal
-from intruder.trcore.motifs import MAX_FUZZY_MOTIF, MotifEquivalence, MotifTolerance
 
 from .catalog import STATUSES, RepeatCatalog
+from .motifs import MotifEquivalence, MotifTolerance
 from .platforms import parse_catalogs, resolve_source, read_catalog
 
 
 # known < novel_motif < novel_locus < unscreened -- the most conservative
-# verdict wins when catalogs disagree: a locus is only novel if none of
+# verdict wins when catalogues disagree: a locus is only novel if none of
 # them has it. unscreened ranks last since it's an absence of coverage, not
 # an opinion -- any catalogue with an actual verdict outranks it.
-_PRECEDENCE = {status: rank for rank, status in enumerate(STATUSES)}
+PRECEDENCE = {status: rank for rank, status in enumerate(STATUSES)}
 BY_RANK = dict(enumerate(STATUSES))
 
 
@@ -55,24 +50,23 @@ def _add_screen_args(parser: argparse.ArgumentParser) -> None:
         "--window", type=int, default=10, metavar="BP",
         help="how far a reference repeat may sit from the query coordinate "
              "and still count as the same locus (default: %(default)s)")
-    # group.add_argument(
-    #     "--max-motif-edits", type=int, default=0, metavar="N",
-    #     help="accept a reference motif within N edits of the query motif "
-    #          "(default: %(default)s, exact only)")
+    group.add_argument(
+        "--max-motif-edits", type=int, default=0, metavar="N",
+        help="accept a reference motif within N edits of the query motif "
+             "(default: %(default)s, exact only)")
     group.add_argument(
         "--max-motif-edit-fraction", type=float, default=None, metavar="FRAC",
         help="also accept a reference motif within FRAC x its length, for "
              "long motifs (default: off)")
     group.add_argument(
-        "--max-fuzzy-motif", type=int, default=MAX_FUZZY_MOTIF, metavar="BP",
-        help="longest motif near-miss matching is attempted on "
-             "(default: %(default)s)")
+        "--min-subrepeat-motif", type=int, default=None, metavar="BP",
+        help="also accept a reference motif that the query motif tiles, e.g. "
+             "ACC against ACCATC, when the tiling unit is at least BP long. "
+             "Only has an effect together with --max-motif-edits or "
+             "--max-motif-edit-fraction (default: off)")
     group.add_argument(
         "--circular", action=argparse.BooleanOptionalAction, default=True,
         help="CAG == AGC == GCA, i.e. rotation-equivalent (default: on)")
-    # group.add_argument(
-    #     "--reverse-complement", action="store_true",
-    #     help="CAG == CTG, i.e. opposite-strand equivalent (default: off)")
 
 
 def _add_catalog_args(parser: argparse.ArgumentParser) -> None:
@@ -107,9 +101,9 @@ def _equivalence(args: argparse.Namespace) -> MotifEquivalence:
 
 
 def _tolerance(args: argparse.Namespace) -> MotifTolerance:
-    return MotifTolerance(#max_edits=args.max_motif_edits or 0,
+    return MotifTolerance(max_edits=args.max_motif_edits or 0,
                           max_edit_fraction=args.max_motif_edit_fraction,
-                          max_fuzzy_motif=args.max_fuzzy_motif or MAX_FUZZY_MOTIF)
+                          min_subrepeat_motif=args.min_subrepeat_motif)
 
 
 # --------------------------------------------------------------------------- #
@@ -151,10 +145,10 @@ def _locus_counts(out: pd.DataFrame, chrom_col: str, pos_col: str) -> tuple[pd.S
     insertion, or multiple TRF calls at one site -- and row-level counts
     overweight whichever loci happen to have more duplicate rows. This takes
     the most conservative verdict across a locus's rows (same precedence
-    `combine_verdicts` uses across catalogs, just applied across rows here)
+    `combine_verdicts` uses across catalogues, just applied across rows here)
     so each genomic locus is counted exactly once.
     """
-    ranks = out["novelty"].map(_PRECEDENCE)
+    ranks = out["novelty"].map(PRECEDENCE)
     per_locus_rank = ranks.groupby([out[chrom_col], out[pos_col]], sort=False).min()
     per_locus_status = per_locus_rank.map(BY_RANK)
     return per_locus_status.value_counts(), len(per_locus_status)
@@ -164,7 +158,7 @@ def _report(out: pd.DataFrame, args: argparse.Namespace, catalogs: dict) -> None
     counts = out["novelty"].value_counts()
     total = len(out) or 1
     print(f"[novelty] {args.output}: {len(out):,} row(s), "
-          f"catalogs: {', '.join(catalogs)}", file=sys.stderr)
+          f"catalogues: {', '.join(catalogs)}", file=sys.stderr)
     for status in STATUSES:
         n = int(counts.get(status, 0))
         print(f"[novelty]   {status:<12} {n:>8,}  ({100 * n / total:5.1f}%)",
@@ -180,47 +174,14 @@ def _report(out: pd.DataFrame, args: argparse.Namespace, catalogs: dict) -> None
 
 
 def combine_verdicts(statuses: pd.DataFrame) -> pd.Series:
-    """One verdict per row, across catalogs' status columns."""
-    ranks = statuses.apply(lambda column: column.map(_PRECEDENCE))
+    """One verdict per row, across catalogues' status columns."""
+    ranks = statuses.apply(lambda column: column.map(PRECEDENCE))
     return ranks.min(axis=1).map(BY_RANK)   
 
 
 # --------------------------------------------------------------------------- #
 # commands
 # --------------------------------------------------------------------------- #
-
-def _cmd_query(args: argparse.Namespace) -> int:
-    catalogs = load_catalogs(args.repeats, equivalence=_equivalence(args),
-                             formats=_parse_formats(args.format))
-    tolerance = _tolerance(args)
-    point = to_internal(args.pos, args.coord_base)
-
-    print(f"{args.chrom}:{args.pos} ({args.coord_base}-based)  "
-          f"motif={args.motif.strip().upper()}")
-
-    verdicts = {}
-    for name, catalog in catalogs.items():
-        verdict = catalog.screen(args.chrom, point, args.motif, window=args.window,
-                                 tolerance=tolerance)
-        verdicts[name] = verdict
-        print(f"  {name}")
-        print(f"    status : {verdict.status}")
-        print(f"    nearby (+/-{args.window}bp): {verdict.n_nearby} "
-              f"reference repeat(s)")
-        if verdict.best is not None:
-            repeat = verdict.best.repeat
-            start, end = to_external(repeat.start, repeat.end, args.coord_base)
-            label = verdict.best.match if verdict.best.motif_matches else "nearest"
-            print(f"    best {label:<9}: {repeat.chrom}:{start}-{end}  "
-                  f"motif={repeat.motif} (canonical={repeat.canonical}, "
-                  f"{verdict.best.motif_edits} edit(s), "
-                  f"{verdict.best.distance}bp away)")
-
-    if len(verdicts) > 1:
-        combined = min(verdicts.values(), key=lambda v: _PRECEDENCE[v.status])
-        print(f"  combined : {combined.status}")
-    return 0
-
 
 def _cmd_annotate(args: argparse.Namespace) -> int:
     catalogs = load_catalogs(args.repeats, equivalence=_equivalence(args),
@@ -265,20 +226,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="novelty-min",
         description="screen tandem repeats against one or more explicitly-"
-                    "given reference catalogs -- core algorithm only")
+                    "given reference catalogues -- core algorithm only")
     parser.add_argument(
         "--coord-base", type=int, choices=(0, 1), default=1,
-        help="coordinate base of --pos / the input table's position column "
+        help="coordinate base of the input table's position column "
              "(default: %(default)s, VCF-style)")
     subparsers = parser.add_subparsers(dest="command", required=True)
-
-    query = subparsers.add_parser("query", help="screen one locus")
-    query.add_argument("--chrom", required=True)
-    query.add_argument("--pos", type=int, required=True)
-    query.add_argument("--motif", required=True)
-    _add_catalog_args(query)
-    _add_screen_args(query)
-    query.set_defaults(func=_cmd_query)
 
     annotate = subparsers.add_parser("annotate", help="screen a whole table")
     annotate.add_argument("input")
