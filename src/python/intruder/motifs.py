@@ -17,9 +17,10 @@ independent knobs because they are not equally safe:
 *wildcard N* (always on, reference side only)
     ``N`` in a *reference* motif matches any base in the query, so a reference
     ``NAC`` accepts ``CAC``, ``GAC``, ``AAC`` and ``TAC``. An ``N`` in the query
-    is an ordinary letter. A reference longer than the query unit is matched by
-    tiling the unit across it, so ``ACAN`` accepts ``AC``. Unlike the two above
-    this is not part of the canonical form: ``N`` matches both ``A`` and ``C``
+    is an ordinary letter for this rule, which needs the two motifs to be the
+    same length; a longer reference is handled by ``min_subrepeat_motif``
+    below, where an ``N`` on either side is free. Unlike the two above this is
+    not part of the canonical form: ``N`` matches both ``A`` and ``C``
     while ``A`` does not match ``C``, so the relation is not transitive and
     cannot be a key. It is checked pairwise in :meth:`MotifTolerance.compare`,
     right after the exact check.
@@ -46,12 +47,11 @@ settings, and :meth:`MotifTolerance.compare` reports which one fired:
     Also accept a reference motif that the query motif *tiles*, so a query of
     ``ACC`` can match a reference consensus of ``ACCATC``. TRF reports one
     representative unit per locus and picks its period arbitrarily, so the two
-    sides can describe one repeat at different periods.
+    sides can describe one repeat at different periods. While tiling, an ``N``
+    in either motif counts as any base -- the catalogue entry can be the unit
+    or the longer motif being tiled over -- so ``AC`` tiles ``ACAN`` without
+    any edit budget.
 
-Nothing here knows about a particular repeat catalogue -- see
-:mod:`novelty.platforms` for that -- and nothing here needs numpy, so a
-pure-stdlib step can compare motifs without taking on pandas. The vectorised
-wrapper for catalogue-scale data is :func:`novelty.platforms.canonical_motifs`.
 """
 
 from __future__ import annotations
@@ -156,7 +156,10 @@ def canonical_motif(motif: str,
 
 
 def _edit_distance(a: str, b: str, cutoff: int) -> int:
-    """Levenshtein distance, short-circuiting once it exceeds ``cutoff``."""
+    """Levenshtein distance, short-circuiting once it exceeds ``cutoff``.
+    
+    Allows 'N' char handling to not count towards distance.
+    """
     if abs(len(a) - len(b)) > cutoff:
         return cutoff + 1
     prev = list(range(len(b) + 1))
@@ -283,6 +286,9 @@ def tiling_distance(unit: str, target: str, cutoff: int) -> int:
 
     At least two whole copies of ``unit`` must fit, otherwise it is not tiling
     anything and any short unit would "explain" any long motif.
+
+    An ``N`` in either motif matches any base at no cost, in ``unit`` as well as
+    in ``target`` (the longer motif): the catalogue entry can be either one.
     """
     n = len(target)
     if not unit or len(unit) * 2 > n:
@@ -293,7 +299,7 @@ def tiling_distance(unit: str, target: str, cutoff: int) -> int:
         tiled = (rotated * (n // len(rotated) + 1))[:n]
         distance = 0
         for x, y in zip(tiled, target):
-            if x != y:
+            if x != y and y != "N" and x != "N":
                 distance += 1
                 if distance >= best:
                     break
@@ -317,11 +323,9 @@ def _wildcard_match(qc: str, tc: str, equivalence: MotifEquivalence) -> bool:
     therefore tried against the fixed target; rotating one side is enough,
     because (rot_i(q), rot_j(t)) match exactly when (rot_(i-j)(q), t) do.
 
-    The query unit's length must divide the reference's, and each rotation is
-    tiled across the reference before comparing: ``AC`` matches ``ACAN`` because
-    ``ACAC`` fits ``ACAN``. Equal length is the one-copy case. Only ``tc`` is a
-    pattern: an ``N`` in ``qc`` is an ordinary letter and matches only a target
-    ``N``.
+    Same length is required; a longer reference is matched by tiling, which is
+    ``min_subrepeat_motif``'s job. Only ``tc`` is a pattern: an ``N`` in ``qc``
+    is an ordinary letter and matches only a target ``N``.
     """
     tc_len, qc_len = len(tc), len(qc)
     if tc_len != qc_len: #not qc_len or tc_len % qc_len:
@@ -351,14 +355,15 @@ class MotifTolerance:
 
     ``min_subrepeat_motif``
         Also accept a motif that tiles the other, when the tiling unit is at
-        least this long. ``None`` disables it. It shares the edit budget above,
-        so with both budgets at zero it only accepts a tiling that is exact --
-        and an exact tiling is already handled by period reduction, so this
-        setting does nothing on its own.
+        least this long. ``None`` disables it. It shares the edit budget above.
+        While tiling, an ``N`` in either motif counts as any base, so ``AC``
+        against ``ACAN`` matches with both budgets at zero. Without an ``N`` an
+        exact tiling is already handled by period reduction, so it then only
+        matters together with a budget.
 
     Independent of all three, an ``N`` in the *reference* motif always matches
-    any query base (kind ``wildcard``, 0 edits). It is not a setting and does
-    not count towards ``bool(tolerance)``.
+    any query base of a same-length motif (kind ``wildcard``, 0 edits). It is
+    not a setting and does not count towards ``bool(tolerance)``.
 
     No length cap is applied -- fuzzy and tiling comparison run at any motif
     length a caller enables them for, at the corresponding O(len^2) cost.

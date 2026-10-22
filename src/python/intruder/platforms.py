@@ -4,10 +4,10 @@ Every catalogue is normalised to one schema (``chrom, start, end, motif`` plus
 whatever of :data:`ANNOTATION_COLUMNS` it carries) -- this is what
 :mod:`novelty.catalog` builds its interval index from.
 
-Only plain BED4 (``chrom start end motif``) is read here; no format sniffing,
-no UCSC ``simpleRepeat``/TRGT readers. A catalogue is given explicitly, as a
-local path or a URL -- no platform registry, no named/bundled catalogues, no
-auto-discovery.
+Three formats are read, each named explicitly and never sniffed from the file:
+plain BED4 (``chrom start end motif``, the default), UCSC's raw
+``simpleRepeat.txt(.gz)`` table dump, and STRchive's loci JSON.
+A catalogue is given explicitly, as a local path or a URL
 """
 
 from __future__ import annotations
@@ -19,10 +19,10 @@ from urllib.parse import urlparse
 import numpy as np
 import pandas as pd
 
-from intruder.trcore.coords import normalize_chrom
-from intruder.trcore.fetch import download_file
+from .coords import normalize_chrom
+from .fetch import download_file
 from .motifs import DEFAULT_EQUIVALENCE, MotifEquivalence, canonical_motif
-from intruder.trcore.paths import repo_root
+from .paths import repo_root
 
 # The normalised schema every reader produces.
 CATALOG_COLUMNS = ("chrom", "start", "end", "motif")
@@ -43,7 +43,8 @@ _SIMPLEREPEAT_COLUMNS = ("bin", "chrom", "chromStart", "chromEnd", "name",
                          "sequence")
 
 
-DOWNLOAD_DIR = Path(repo_root(__file__) / "data" / "novelty")
+_ROOT = repo_root(__file__)
+DOWNLOAD_DIR = (_ROOT / "data" / "novelty") if _ROOT else Path.home() / ".cache" / "novelty"
 
 
 
@@ -112,8 +113,9 @@ def _finalize(frame: pd.DataFrame, path: Path) -> pd.DataFrame:
 def read_catalog(path: str | Path, fmt: str = "bed") -> pd.DataFrame:
     """Read a catalogue file into the normalised schema.
 
-    ``fmt`` is explicit, never sniffed: ``"bed"`` (plain BED4, the default) or
-    ``"ucsc"`` (a raw UCSC ``simpleRepeat.txt(.gz)`` table dump).
+    ``fmt`` is explicit, never sniffed: ``"bed"`` (plain BED4, the default),
+    ``"ucsc"`` (a raw UCSC ``simpleRepeat.txt(.gz)`` table dump) or
+    ``"strchive"`` (STRchive's loci JSON, one row per motif of each locus).
     """
     if fmt == "bed":
         return read_bed(path)
@@ -166,6 +168,7 @@ def read_simplerepeat(path: str | Path) -> pd.DataFrame:
         "per_match": frame["perMatch"],
         "per_indel": frame["perIndel"],
     })
+    
     return _finalize(renamed, path)
 
 
@@ -176,11 +179,21 @@ def read_strchive(path:str | Path) -> pd.DataFrame:
         path, compression="gzip" if _is_gzip(path) else None,
         dtype={"chrom": "string" }
     )
+
+    # combine motif lists 
+    motifs = frame["reference_motif_reference_orientation"] + \
+                    frame["pathogenic_motif_reference_orientation"] + \
+                        frame["benign_motif_reference_orientation"] + \
+                            frame["unknown_motif_reference_orientation"]
+
+    # deduplicate each row while preserving order
+    frame['unique_motifs'] = motifs.apply(lambda x: list(dict.fromkeys(x)))
+
     renamed = pd.DataFrame({
         "chrom": frame["chrom"],
         "start": frame["start_hg38"],
         "end": frame["stop_hg38"],
-        "motif": frame["pathogenic_motif_reference_orientation"],
+        "motif": frame["unique_motifs"],
         "period": frame["motif_len"],
         "copy_num": frame["ref_copies"],
     })

@@ -25,8 +25,8 @@ dependencies = [
 # nobody's notes or Nextflow process bodies break.
 svpytrf     = "intruder.pipeline.trf.sv_trfcaller:main"
 filter      = "intruder.pipeline.trf.filter_ins_trf:main"
-novelty     = "intruder.pipeline.novelty.cli:main"
-strchive    = "intruder.pipeline.strchive.__main__:main"
+novelty     = "intruder.cli:main"
+# strchive   = "intruder.pipeline.strchive.__main__:main"
 compression = "intruder.pipeline.compression.annotate:main"
 
 [dependency-groups]

@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from intruder.trcore.coords import interval_distance, normalize_chrom
+from .coords import interval_distance, normalize_chrom
 from .motifs import (
     DEFAULT_EQUIVALENCE,
     DEFAULT_TOLERANCE,
@@ -334,6 +334,7 @@ class RepeatCatalog:
             rows = group.to_numpy()
             batch = self._overlap_batch(
                 chrom, point_values[rows] - window, point_values[rows] + window + 1)
+            
             for row, indices in zip(rows, batch):
                 point = int(point_values[row])
                 best = self._best_hit(indices, chrom, point, motif_values[row],

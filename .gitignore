@@ -280,6 +280,9 @@ rsconnect/
 # `python -m strchive` re-fetch on demand, so they should not land in a commit)
 data/reference/
 
+# downloaded catalogs for novelty step in pipeline
+data/novelty/
+
 # Index caches the novelty screen builds beside a catalogue it is pointed at.
 # The downloaded catalogues live under data/reference/ above, but the in-repo
 # pathogenic BED is screened in place, so its sidecar lands in data/novelty/.

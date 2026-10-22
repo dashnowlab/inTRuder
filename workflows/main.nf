@@ -65,42 +65,7 @@ process FIND_TRS {
     """
 }
 
-// ---------------------------------------------------------------------
-// 01.1 - Add alt allele sequence compressibility score (optional)
-// ---------------------------------------------------------------------
-// process ANNOTATE_COMPRESSIBILITY {
 
-//     // publishDir copies this process's output to a results folder,
-//     // so it's not just buried in Nextflow's internal work/ directory
-//     // TODO: change to output in corresponding parent directory
-//     publishDir "results/011_annotate_compressibility", mode: "copy"
-
-//     input:
-//     path vcf_file
-
-//     output:
-//     path "*_comp.vcf"
-
-//     script:
-//     // Calls the `compression` console script the same way FIND_NOVEL calls
-//     // `uv run novelty`. The annotator itself came in with #81 and currently
-//     // sits at src/python/intruder/compression/add_compression.py; a
-//     // follow-up moves it to intruder/pipeline/compression/annotate.py and
-//     // registers it in [project.scripts]. Targeting the console script rather
-//     // than a file path means that move does not break this process.
-//     //
-//     // Nothing is read from the host source tree, so this resolves from
-//     // whatever directory Nextflow stages the task in - the old relative
-//     // "../src/python/..." path never could have.
-//     //
-//     // simpleName strips the directory and every extension, so
-//     // sample.merged.vcf -> sample_comp.vcf, matching the output glob below.
-//     // Bash-style ${var%.vcf} does NOT work here: Nextflow interpolates
-//     // ${...} as Groovy before the shell ever sees it.
-//     """
-//     uv run compression -i ${vcf_file} -o ${vcf_file.simpleName}_comp.vcf
-//     """
-// }
 
 
 // ---------------------------------------------------------------------
@@ -133,7 +98,7 @@ process FILTER_BY_COVERAGE {
 
 
 // ---------------------------------------------------------------------
-// 02B - NOVELTY (optional)
+// 02B - NOVELTY
 // ---------------------------------------------------------------------
 process FIND_NOVEL {
     // TODO: change to output in corresponding parent directory
@@ -146,17 +111,15 @@ process FIND_NOVEL {
     path "novelty_output.tsv"
 
      script:
-    // --min-rep-units 3 matches the standard TR definition floor
-    // discussed earlier (AJHG catalog: >=3 repeat units to count as a
-    // real TR). Deliberately NOT setting --min-purity: interrupted /
-    // imperfect repeats are real biology, not noise - a hard purity
-    // gate would bias against exactly the messier, more-likely-novel
-    // loci this pipeline is hunting for. Not using --drop-filtered
-    // either, so nothing is silently discarded - every row is kept and
-    // tagged, with filtering decisions left to a downstream step.
+
     """
-    uv run novelty --platform ucsc,trexplorer annotate ${trf_tsv} novelty_output.tsv \
-        --min-rep-units 3
+    uv run novelty \
+    --repeats ucsc=https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/simpleRepeat.txt.gz --format ucsc=ucsc \
+    --repeats tr_expl=https://github.com/broadinstitute/trexplorer-catalog/releases/download/v2.0/TRExplorer.repeat_catalog_v2.hg38.1_to_1000bp_motifs.bed.gz \
+    --repeats strchive=https://raw.githubusercontent.com/dashnowlab/STRchive/refs/heads/main/data/STRchive-loci.json --format strchive=strchive \
+    ${novelty_tsv} \
+    novelty_output.tsv
+        
     """
 }
 
@@ -308,14 +271,6 @@ workflow {
         vcf_ch = Channel.fromPath(params.default_vcf_path)
     }
 
-    // --- Optional compressibility annotation ---
-    if (params.run_compressibility) {
-        ANNOTATE_COMPRESSIBILITY(vcf_ch)
-        vcf_ch = ANNOTATE_COMPRESSIBILITY.out
-    }
-    else {
-        vcf_ch = vcf_ch
-    }
     
     // --- Baseline: find TRs in the insertions (always runs)---
     FIND_TRS(vcf_ch)
@@ -332,8 +287,8 @@ workflow {
 
     // --- 03: optional, branches off 01's output ---
     if (params.run_novelty) {
-    FIND_NOVEL(FIND_TRS.out)
     FILTER_BY_COVERAGE(FIND_NOVEL.out)
+    FIND_NOVEL(FIND_TRS.out)
     novelty_out = FILTER_BY_COVERAGE.out.filtered
     } else {
         novelty_out = Channel.fromPath("${projectDir}/assets/NO_FILE")

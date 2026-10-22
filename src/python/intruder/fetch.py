@@ -30,7 +30,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from intruder.trcore.paths import repo_root
+from .paths import repo_root
 
 #: Where the cache lands inside a checkout, relative to the repo root.
 CACHE_SUBDIR = ("data", "reference")
