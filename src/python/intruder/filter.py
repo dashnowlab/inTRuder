@@ -242,8 +242,8 @@ def run_filters(df: pd.DataFrame, args):
     
     apply_step(
         f"min_depth(>={args.min_depth})",
-        (depth_split.str[0].str.strip().astype(int) >= args.min_depth) & 
-        (depth_split.str[1].str.strip().astype(int) >= args.min_depth),
+        (depth_split.str[0].str.strip().astype(int) >= args.min_depth) #& 
+        #(depth_split.str[1].str.strip().astype(int) >= args.min_depth), disabled for now, so reference depths are not filtering variants
     )
 
     return current, funnel
