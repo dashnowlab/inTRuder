@@ -16,7 +16,7 @@ a full VCF (potentially millions of loci). This version was cross-checked agains
 naive implementation across thousands of random and realistic sequences: identical
 (motif, repeat_count) results, ~1000x+ faster on large alleles.
 
-Dependencies: pandas, numpy, joblib, tqdm (only needed for calculate_lps_for_vcf;
+Dependencies: pandas, numpy, joblib;
 the core find_longest_repeat/normalize_motif functions have no dependencies beyond
 the standard library).
 

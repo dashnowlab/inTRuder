@@ -14,13 +14,16 @@ independent knobs because they are not equally safe:
     are TRF output, so a phase difference is an artefact of the caller rather
     than biology.
 
-*reverse complement* (:attr:`MotifEquivalence.reverse_complement`, OFF by default)
-    ``CAG`` and ``CTG`` are the same double-stranded repeat read from opposite
-    strands. Whether that makes them the same *locus feature* is a judgement
-    call -- for a CAG expansion it usually does, but it also collapses the
-    homopolymers ``A`` and ``T``, which is rarely what you want. Off unless
-    asked for, and :attr:`MotifEquivalence.reverse_complement_bp` can restrict
-    it to motifs long enough for an RC match to mean something.
+*wildcard N* (always on, reference side only)
+    ``N`` in a *reference* motif matches any base in the query, so a reference
+    ``NAC`` accepts ``CAC``, ``GAC``, ``AAC`` and ``TAC``. An ``N`` in the query
+    is an ordinary letter for this rule, which needs the two motifs to be the
+    same length; a longer reference is handled by ``min_subrepeat_motif``
+    below, where an ``N`` on either side is free. Unlike the two above this is
+    not part of the canonical form: ``N`` matches both ``A`` and ``C``
+    while ``A`` does not match ``C``, so the relation is not transitive and
+    cannot be a key. It is checked pairwise in :meth:`MotifTolerance.compare`,
+    right after the exact check.
 
 Two motifs are equivalent when their canonical forms agree under the policy in
 force. Everything looser than that lives in :class:`MotifTolerance`, which is a
@@ -44,35 +47,17 @@ settings, and :meth:`MotifTolerance.compare` reports which one fired:
     Also accept a reference motif that the query motif *tiles*, so a query of
     ``ACC`` can match a reference consensus of ``ACCATC``. TRF reports one
     representative unit per locus and picks its period arbitrarily, so the two
-    sides can describe one repeat at different periods.
+    sides can describe one repeat at different periods. While tiling, an ``N``
+    in either motif counts as any base -- the catalogue entry can be the unit
+    or the longer motif being tiled over -- so ``AC`` tiles ``ACAN`` without
+    any edit budget.
 
-Nothing here knows about a particular repeat catalogue -- see
-:mod:`novelty.platforms` for that -- and nothing here needs numpy, so a
-pure-stdlib step can compare motifs without taking on pandas. The vectorised
-wrapper for catalogue-scale data is :func:`novelty.platforms.canonical_motifs`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import NamedTuple
-
-# Full IUPAC, not just ACGTN: a catalogue is entitled to write an ambiguous base
-# in a consensus, and translating only ACGTN would *reverse* R/Y/S/W/K/M/B/D/H/V
-# without complementing them, silently turning `ACRYN` into `NYRGT` instead of
-# `NRYGT`. Same table as str-analysis `utils/misc_utils.COMPLEMENT`, plus the
-# lowercase half so a soft-masked motif survives.
-_COMPLEMENT = str.maketrans(
-    "ACGTUNRYSWKMBDHVacgtunryswkmbdhv",
-    "TGCAANYRSWMKVHDBtgcaanyrswmkvhdb",
-)
-
-# Rotational edit distance is O(len^2) per rotation and only meaningful for
-# short units; longer motifs fall back to exact canonical comparison. Tunable
-# per call -- raising it costs time, lowering it turns near misses into novelty.
-# It has to clear the VNTR range to be useful: two catalogues rarely agree on a
-# long consensus, which is exactly where a near miss is the interesting answer.
-MAX_FUZZY_MOTIF = 200
 
 # The motif length that separates an STR from a VNTR. At or below it the exact
 # sequence of the unit is reliable and a single substitution is a real
@@ -90,60 +75,26 @@ class MotifEquivalence:
     """Which transformations of a repeat unit still count as the same repeat.
 
     Period reduction (``CAGCAG`` -> ``CAG``) is not listed because it is always
-    applied. The two that are listed differ in how safe they are, which is why
-    they default differently:
+    applied.
 
     ``circular``
         Treat every rotation of the unit as the same repeat, so ``CAG``, ``AGC``
         and ``GCA`` agree. On by default -- TRF chooses the starting phase
         arbitrarily on both sides of the comparison.
-
-    ``reverse_complement``
-        Additionally treat the unit's reverse complement as the same repeat, so
-        ``CAG`` and ``CTG`` agree. **Off by default**: it also merges the
-        homopolymers ``A`` and ``T``, which loses a real distinction.
-
-        Note that ``GC``/``CG`` and ``AT``/``TA`` are *not* examples of this --
-        they are rotations of one another and collapse under ``circular``.
-
-    ``reverse_complement_bp``
-        Only consider the reverse complement for units at least this long, so
-        the short motifs where an RC match is most likely coincidental keep
-        their strands apart. ``None`` (the default) applies it at every length.
-        It does nothing at all unless ``reverse_complement`` is set.
     """
 
     circular: bool = True
-    reverse_complement: bool = False
-    reverse_complement_bp: int | None = None
-
-    def rc_applies(self, unit: str) -> bool:
-        """Whether the reverse complement of this primitive unit is in scope."""
-        if not self.reverse_complement:
-            return False
-        if self.reverse_complement_bp is None:
-            return True
-        return len(unit) >= self.reverse_complement_bp
 
     def describe(self) -> str:
         """One line naming the policy, for `query` output and log messages."""
         parts = ["period reduction"]
         if self.circular:
             parts.append("rotation")
-        if self.reverse_complement:
-            limit = self.reverse_complement_bp
-            parts.append("reverse complement"
-                         + (f" (>={limit}bp only)" if limit is not None else ""))
         return " + ".join(parts)
 
 
-# What the tool does unless told otherwise: phase-independent, strand-aware.
+# What the tool does unless told otherwise: phase-independent.
 DEFAULT_EQUIVALENCE = MotifEquivalence()
-
-
-def reverse_complement(seq: str) -> str:
-    """Reverse complement of a DNA string."""
-    return seq.translate(_COMPLEMENT)[::-1]
 
 
 def primitive_unit(seq: str) -> str:
@@ -169,7 +120,7 @@ def least_rotation(seq: str) -> str:
     if n < 2:
         return seq
     doubled = seq + seq
-    fail = [-1] * (2 * n)
+    fail = [-1] * (2 * n) # ex n=2: [-1,-1]
     k = 0
     for j in range(1, 2 * n):
         cj = doubled[j]
@@ -191,28 +142,24 @@ def canonical_motif(motif: str,
                     equivalence: MotifEquivalence = DEFAULT_EQUIVALENCE) -> str:
     """Key under which two motifs are the same repeat, given an equivalence policy.
 
-    Always reduces to the primitive unit; then folds in rotation and reverse
-    complement as ``equivalence`` allows. Two motifs are the same repeat exactly
-    when this returns the same string for both.
+    Always reduces to the primitive unit; then folds in rotation as
+    ``equivalence`` allows. Two motifs are the same repeat exactly when this
+    returns the same string for both.
 
     The key is a pure function of the motif and the policy, which is what lets
-    the catalogue intern it (see :class:`novelty.catalog.RepeatCatalog`). Note
-    that ``reverse_complement_bp`` keys off the unit length, and reverse
-    complementing preserves length, so a pair of RC-equivalent motifs is always
-    on the same side of that threshold.
+    the catalogue intern it (see :class:`novelty.catalog.RepeatCatalog`).
     """
     unit = primitive_unit(motif.strip().upper())
     if not unit:
         return ""
-    forward = least_rotation(unit) if equivalence.circular else unit
-    if not equivalence.rc_applies(unit):
-        return forward
-    rc = reverse_complement(unit)
-    return min(forward, least_rotation(rc) if equivalence.circular else rc)
+    return least_rotation(unit) if equivalence.circular else unit
 
 
 def _edit_distance(a: str, b: str, cutoff: int) -> int:
-    """Levenshtein distance, short-circuiting once it exceeds ``cutoff``."""
+    """Levenshtein distance, short-circuiting once it exceeds ``cutoff``.
+    
+    Allows 'N' char handling to not count towards distance.
+    """
     if abs(len(a) - len(b)) > cutoff:
         return cutoff + 1
     prev = list(range(len(b) + 1))
@@ -220,7 +167,7 @@ def _edit_distance(a: str, b: str, cutoff: int) -> int:
         cur = [i]
         best = i
         for j, cb in enumerate(b, start=1):
-            cost = 0 if ca == cb else 1
+            cost = 0 if ca == cb or cb == "N" else 1
             val = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
             cur.append(val)
             best = min(best, val)
@@ -231,18 +178,18 @@ def _edit_distance(a: str, b: str, cutoff: int) -> int:
 
 
 def motif_distance(query: str, target: str, cutoff: int,
-                   equivalence: MotifEquivalence = DEFAULT_EQUIVALENCE, *,
-                   max_fuzzy_motif: int = MAX_FUZZY_MOTIF) -> int:
+                   equivalence: MotifEquivalence = DEFAULT_EQUIVALENCE) -> int:
     """Edit distance between two motifs, minimised over whatever ``equivalence`` allows.
 
     Returns ``0`` for equivalent motifs and ``cutoff + 1`` when the two are
-    further apart than ``cutoff`` (or longer than ``max_fuzzy_motif``, above
-    which only exact canonical equality is tested).
+    further apart than ``cutoff``. No length cap: a caller that enables fuzzy
+    matching on very long motifs pays the full O(len^2) edit-distance cost --
+    see :class:`MotifTolerance`.
 
     ``cutoff <= 0`` is the important case: it returns before any edit distance is
     computed, so a one-substitution near miss like ``CAG`` against ``CAT`` is
-    *not* a match. Only a caller that has explicitly asked for fuzziness by
-    raising ``--max-motif-edits`` ever sees one.
+    *not* a match unless ``--max-motif-edits`` or ``--max-motif-edit-fraction``
+    raises the budget above zero.
     """
     qc = canonical_motif(query, equivalence)
     tc = canonical_motif(target, equivalence)
@@ -250,24 +197,18 @@ def motif_distance(query: str, target: str, cutoff: int,
         return 0
     if cutoff <= 0:
         return cutoff + 1
-    if len(qc) > max_fuzzy_motif or len(tc) > max_fuzzy_motif:
-        return cutoff + 1
     # Every candidate below is a rotation of the query's primitive unit, and
     # rotation preserves length, so a length gap wider than the cutoff rules them
     # all out at once -- worth checking before building the rotation list.
     if abs(len(qc) - len(tc)) > cutoff:
         return cutoff + 1
 
-    # Rotations and the reverse complement are folded into the candidate set only
-    # when the policy admits them, so fuzziness can never smuggle in a match that
-    # exact comparison would have rejected on strand or phase grounds.
+    # Rotations are folded into the candidate set only when the policy admits
+    # them, so fuzziness can never smuggle in a match that exact comparison
+    # would have rejected on phase grounds.
     unit = primitive_unit(query.strip().upper())
     candidates = ([unit[i:] + unit[:i] for i in range(len(unit))]
                   if equivalence.circular else [unit])
-    if equivalence.rc_applies(unit):
-        rc = reverse_complement(unit)
-        candidates += ([rc[i:] + rc[:i] for i in range(len(rc))]
-                       if equivalence.circular else [rc])
 
     best = cutoff + 1
     for cand in candidates:
@@ -289,19 +230,21 @@ def motif_distance(query: str, target: str, cutoff: int,
 # Which rule accepted a pair of motifs, reported alongside every verdict so a
 # loosened match never looks like an exact one in the output.
 MATCH_EXACT = "exact"          # same canonical form
+MATCH_WILDCARD = "wildcard"    # an N in the reference motif matched a query base
 MATCH_FUZZY = "fuzzy"          # within the flat --max-motif-edits budget
 MATCH_VNTR = "vntr"            # within the proportional budget, VNTR lengths only
 MATCH_SUBREPEAT = "subrepeat"  # one motif tiles the other
 MATCH_NONE = ""                # not the same repeat under this tolerance
 
-MATCH_KINDS = (MATCH_EXACT, MATCH_FUZZY, MATCH_VNTR, MATCH_SUBREPEAT)
+MATCH_KINDS = (MATCH_EXACT, MATCH_WILDCARD, MATCH_FUZZY, MATCH_VNTR,
+               MATCH_SUBREPEAT)
 
 
 class MotifMatch(NamedTuple):
     """Whether two motifs are the same repeat, and on what grounds."""
 
     kind: str     # one of MATCH_KINDS, or MATCH_NONE
-    edits: int    # 0 for an exact match; budget + 1 when nothing matched
+    edits: int    # 0 for an exact or wildcard match; budget + 1 when nothing matched
 
     @property
     def matched(self) -> bool:
@@ -343,6 +286,9 @@ def tiling_distance(unit: str, target: str, cutoff: int) -> int:
 
     At least two whole copies of ``unit`` must fit, otherwise it is not tiling
     anything and any short unit would "explain" any long motif.
+
+    An ``N`` in either motif matches any base at no cost, in ``unit`` as well as
+    in ``target`` (the longer motif): the catalogue entry can be either one.
     """
     n = len(target)
     if not unit or len(unit) * 2 > n:
@@ -353,7 +299,7 @@ def tiling_distance(unit: str, target: str, cutoff: int) -> int:
         tiled = (rotated * (n // len(rotated) + 1))[:n]
         distance = 0
         for x, y in zip(tiled, target):
-            if x != y:
+            if x != y and y != "N" and x != "N":
                 distance += 1
                 if distance >= best:
                     break
@@ -362,6 +308,33 @@ def tiling_distance(unit: str, target: str, cutoff: int) -> int:
             if best == 0:
                 break
     return best
+
+
+_WILDCARD_NOTE = "N in a reference motif matches any base"
+
+
+def _wildcard_match(qc: str, tc: str, equivalence: MotifEquivalence) -> bool:
+    """Whether ``tc`` matches ``qc`` once every ``N`` in ``tc`` may be any base.
+
+    Both arguments are canonical forms. Canonicalisation chose each rotation
+    independently by lexicographic order, which ranks ``N`` between ``G`` and
+    ``T``, so the two strings need not line up even when a rotation of one
+    matches the other. Under ``circular`` every rotation of the query is
+    therefore tried against the fixed target; rotating one side is enough,
+    because (rot_i(q), rot_j(t)) match exactly when (rot_(i-j)(q), t) do.
+
+    Same length is required; a longer reference is matched by tiling, which is
+    ``min_subrepeat_motif``'s job. Only ``tc`` is a pattern: an ``N`` in ``qc``
+    is an ordinary letter and matches only a target ``N``.
+    """
+    tc_len, qc_len = len(tc), len(qc)
+    if tc_len != qc_len: #not qc_len or tc_len % qc_len:
+        return False
+    #copies = tc_len // qc_len
+    rotations = ((qc[k:] + qc[:k] for k in range(qc_len))
+                 if equivalence.circular else (qc,))
+    return any(all(t == "N" or t == q for q, t in zip(rotation, tc)) #* copies, tc))
+               for rotation in rotations)
 
 
 @dataclass(frozen=True)
@@ -382,31 +355,34 @@ class MotifTolerance:
 
     ``min_subrepeat_motif``
         Also accept a motif that tiles the other, when the tiling unit is at
-        least this long. ``None`` disables it. It shares the edit budget above,
-        so with both budgets at zero it only accepts a tiling that is exact --
-        and an exact tiling is already handled by period reduction, so this
-        setting does nothing on its own.
+        least this long. ``None`` disables it. It shares the edit budget above.
+        While tiling, an ``N`` in either motif counts as any base, so ``AC``
+        against ``ACAN`` matches with both budgets at zero. Without an ``N`` an
+        exact tiling is already handled by period reduction, so it then only
+        matters together with a budget.
 
-    ``max_fuzzy_motif``
-        Longest motif any of the above is attempted on; beyond it only exact
-        canonical equality is tested, because the search is superlinear in motif
-        length.
+    Independent of all three, an ``N`` in the *reference* motif always matches
+    any query base of a same-length motif (kind ``wildcard``, 0 edits). It is
+    not a setting and does not count towards ``bool(tolerance)``.
+
+    No length cap is applied -- fuzzy and tiling comparison run at any motif
+    length a caller enables them for, at the corresponding O(len^2) cost.
     """
 
     max_edits: int = 0
     max_edit_fraction: float | None = None
     min_subrepeat_motif: int | None = None
-    max_fuzzy_motif: int = MAX_FUZZY_MOTIF
 
     def __bool__(self) -> bool:
         """Whether anything looser than exact canonical equality is enabled."""
         return bool(self.max_edits or self.max_edit_fraction
                     or self.min_subrepeat_motif is not None)
 
+
     def describe(self) -> str:
         """One line naming the tolerance, for `query` output and log messages."""
         if not self:
-            return "exact canonical match only"
+            return f"exact canonical match only; {_WILDCARD_NOTE}"
         parts = []
         if self.max_edits:
             parts.append(f"<={self.max_edits} edit(s)")
@@ -415,7 +391,8 @@ class MotifTolerance:
                          f"(>{STR_MAX_MOTIF}bp motifs only)")
         if self.min_subrepeat_motif is not None:
             parts.append(f"tiling by a motif >={self.min_subrepeat_motif}bp")
-        return " or ".join(parts)
+        return " or ".join(parts) + f"; {_WILDCARD_NOTE}"
+
 
     def compare(self, query: str, target: str,
                 equivalence: MotifEquivalence = DEFAULT_EQUIVALENCE, *,
@@ -435,10 +412,14 @@ class MotifTolerance:
         if qc == tc:
             return MotifMatch(MATCH_EXACT, 0)
 
+        # Cheap guard first: only reference motifs containing an N pay for the
+        # pairwise check, and it returns before any edit distance is computed.
+        if "N" in tc and _wildcard_match(qc, tc, equivalence):
+            return MotifMatch(MATCH_WILDCARD, 0)
+
         budget = edit_budget(qc, tc, self.max_edits, self.max_edit_fraction)
         if budget > 0:
-            distance = motif_distance(query, target, budget, equivalence,
-                                      max_fuzzy_motif=self.max_fuzzy_motif)
+            distance = motif_distance(query, target, budget, equivalence)
             if distance <= budget:
                 # Name the tighter rule when both would have accepted it, so the
                 # output does not blame the VNTR budget for an ordinary near miss.
@@ -447,8 +428,7 @@ class MotifTolerance:
 
         if self.min_subrepeat_motif is not None:
             unit, whole = (qc, tc) if len(qc) <= len(tc) else (tc, qc)
-            if (len(unit) >= self.min_subrepeat_motif
-                    and len(whole) <= self.max_fuzzy_motif):
+            if len(unit) >= self.min_subrepeat_motif:
                 # The budget is measured against the tiled length, since that is
                 # how many bases the claim is actually made about.
                 sub_budget = max(budget, edit_budget(whole, whole, self.max_edits,
