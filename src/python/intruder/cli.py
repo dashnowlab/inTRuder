@@ -90,7 +90,7 @@ def _add_trf_args(parser: argparse.ArgumentParser) -> None:
         help="Minimum repeat number for seed (default: 3).")
     group.add_argument(
         "--min-rep-length", type=int, default=10, 
-        help="Minimum length for seed (default: 10).")
+        help="Minimum length for seed in bp (default: 10).")
     group.add_argument(
         "--max-rep-length", type=int, default=10000, 
         help="Maximum length for seed (default: 10000).")
