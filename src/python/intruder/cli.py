@@ -93,7 +93,7 @@ def _add_trf_args(parser: argparse.ArgumentParser) -> None:
         help="Minimum length for seed in bp (default: 10).")
     group.add_argument(
         "--max-rep-length", type=int, default=10000, 
-        help="Maximum length for seed (default: 10000).")
+        help="Maximum length for seed in bp (default: 10000).")
 
 
 def _add_filter_args(parser: argparse.ArgumentParser) -> None:
