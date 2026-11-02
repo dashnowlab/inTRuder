@@ -99,34 +99,26 @@ def _add_trf_args(parser: argparse.ArgumentParser) -> None:
 def _add_filter_args(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("filtering")
     group.add_argument(
-        "-s", "--stats-output", default=None,
-        help="Stats TSV output path (default: <output>.stats.tsv)",
-    )
-    group.add_argument(
         "--exclude-motif-sizes", default="",
-        help="Comma-separated motif sizes to DROP, e.g. '1,2,3,10'. "
+        help="Comma-separated motif sizes to DROP; ranges allowed, "
+             "e.g. '1,3-6,12'. "
              "Leave empty to keep all motif sizes.",
     )
     group.add_argument(
         "--keep-motif-sizes", default="",
-        help="Comma-separated motif sizes to KEEP exclusively (applied "
+        help="Comma-separated motif sizes to KEEP exclusively; ranges "
+             "allowed, e.g. '1,3-6,12' (applied "
              "after --exclude-motif-sizes). Leave empty to disable.",
     )
     group.add_argument(
         "--min-repeat-coverage", type=float, default=0.8,
-        help="Minimum fraction of the insertion covered by the repeat "
-             "(rep_length / insert_size).",
+        help="Minimum fraction of the insertion covered by single repeat "
+             "(rep_length / insert_size). Each row is one repeat, so "
+             "coverage is not summed across repeats in the same insertion.",
     )
     group.add_argument(
         "--min-purity", type=float, default=0.7,
-        help="Minimum TRF purity (column 'purity', 0-1 scale). "
-             "NOTE: no purity default was specified in the request; 0.7 "
-             "is a reasonable starting point -- adjust as needed.",
-    )
-    group.add_argument(
-        "--max-insert-size", type=int, default=10000,
-        help="Maximum insertion size in bp; insertions longer than this "
-             "are removed.",
+        help="Minimum TRF purity (column 'purity', 0-1 scale). ",
     )
     group.add_argument(
         "--min-depth", type=int, default=30,
@@ -146,8 +138,11 @@ def _add_screen_args(parser: argparse.ArgumentParser) -> None:
              "(default: %(default)s, exact only)")
     group.add_argument(
         "--max-motif-edit-fraction", type=float, default=None, metavar="FRAC",
-        help="also accept a reference motif within FRAC x its length, for "
-             "long motifs (default: off)")
+        help="also accept a reference motif within FRAC x the longer motif's "
+             "length in edits, rounded down, for motifs longer than 6 bp only "
+             "(e.g. 0.1 allows 4 edits on a 47 bp motif). Shorter motifs are "
+             "unaffected. Combined with --max-motif-edits by taking the larger "
+             "budget (default: off)")
     group.add_argument(
         "--min-subrepeat-motif", type=int, default=None, metavar="BP",
         help="also accept a reference motif that the query motif tiles, e.g. "
@@ -264,15 +259,16 @@ def combine_verdicts(statuses: pd.DataFrame) -> pd.Series:
 
 def _cmd_detect(args: argparse.Namespace) -> int:
 
+    # load all provided reference catalogs
+    catalogs = load_catalogs(args.repeats, equivalence=_equivalence(args),
+                             formats=_parse_formats(args.format))
+
     # read in input vcf, run trf, and output to dataframe
     frame = run_trf_on_insertions(args)
 
     # filter tandem reapeats according to hyperparams
     frame = filter_trf(frame, args).reset_index(drop=True)
 
-    # load all provided reference catalogs
-    catalogs = load_catalogs(args.repeats, equivalence=_equivalence(args),
-                             formats=_parse_formats(args.format))
     tolerance = _tolerance(args)
 
     # format 

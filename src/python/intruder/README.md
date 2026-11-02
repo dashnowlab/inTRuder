@@ -183,11 +183,9 @@ some calls and lose others.
   Anything else is a plain traceback.
 ## Known limitations
  
-- If pytrf finds no repeats at all, the empty table has no columns and
-  `filter_trf` fails with `KeyError: 'insert_size'`.
 - A VCF record without `DR` or `DV` raises a `TypeError` once a sample carries
   the insertion.
-- `--stats-output` does nothing: no stats file is written.
+  
 ## Extending
  
 - **New filter:** add an `apply_step(...)` in `run_filters` (`filter.py`) and a

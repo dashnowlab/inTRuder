@@ -158,7 +158,7 @@ def run_trf_on_insertions(args):
             if REF == ALT[:len(variant.REF)]:  # Get the inserted sequence
                 ALT = ALT[len(variant.REF):]
             DR    = variant.format('DR')
-            DV    = variant.format('DV')    
+            #DV    = variant.format('DV')    # remove if survivor
             if variant.INFO.get("SVLEN") is None:
                 continue
             LEN   = variant.INFO.get("SVLEN")  # length of the insertion
@@ -169,9 +169,10 @@ def run_trf_on_insertions(args):
                 genotype = variant.genotypes[s]
                 for gt in genotype[:2]:
                     if gt == 0 or gt == '.' or gt == -1: continue  # Skip reference alleles
-                    var_depth = DV[s][0] # depth of reads supporting variant allele
-                    ref_depth = DR[s][0] # depth of reads supporting referebce allele
-                    #ref_depth = DR[s][0] 
+                    #var_depth = DV[s][0] # depth of reads supporting variant allele
+
+                    # survivor handling
+                    var_depth = DR[s][0]
                     
                     n_trf = 0
                     trf_repeats    = []
@@ -193,11 +194,14 @@ def run_trf_on_insertions(args):
                             rep_units  = rep_length // motif_length
                             purity       = float(repeat.identity)/100
 
+                            # if variant.POS == 10454:
+                            #     print(variant)
+
                             trf_repeats.append({
                                         'chrom': variant.CHROM,
                                         'ins_coord': variant.POS,
                                         'SVID': ID,
-                                        'depth': f'{var_depth},{ref_depth}',
+                                        'depth': var_depth,
                                         'insert_size': LEN,
                                         'sample': sample,
                                         'allele': gt,
@@ -214,8 +218,11 @@ def run_trf_on_insertions(args):
 
                     for rep in trf_repeats:
                         rows.append(rep)
-                        #print(*rep, sep='\t', file=out)
+
+
 
 
     # create & return pandas df of trs
+    if not rows:
+        raise RuntimeError(f"no tandem repeats found in any insertion in {args.input}")
     return pd.DataFrame(rows)
