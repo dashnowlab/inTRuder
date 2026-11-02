@@ -2,7 +2,7 @@
 against reference catalogue(s).
 
 The `detect` command runs the whole pipeline on a VCF of structural variants:
-`trfcaller` calls tandem repeats inside each insertion, `filter` drops the weak
+`trfcaller` calls tandem repeats inside each insertion, `filter` drops calls according to thresholds, 
 calls, and `catalog.RepeatCatalog` screens what is left against each reference
 catalogue, giving every row a known / novel verdict.
 
