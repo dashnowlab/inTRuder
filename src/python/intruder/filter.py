@@ -27,9 +27,9 @@ all of them. The first two only run when their option is non-empty.
 
     --exclude-motif-sizes   drop calls whose motif_length is in the list
     --keep-motif-sizes      keep only calls whose motif_length is in the list
-    --min-repeat-coverage   repeat_coverage >= this (default 0.8)
+    --min-repeat-coverage   repeat_coverage >= this (default 0.0)
     --min-purity            purity >= this, on pytrf's 0-1 scale (default 0.7)
-    --min-depth             BOTH numbers in ``depth`` >= this (default 30)
+    --min-depth             BOTH numbers in ``depth`` >= this (default 0)
 
 
 Returns
@@ -44,9 +44,7 @@ gaps wherever rows were removed, so a caller that needs positional alignment
 from __future__ import annotations
 
 import argparse
-import csv
-import statistics as stats
-import sys
+
 
 import numpy as np
 import pandas as pd

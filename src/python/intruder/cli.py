@@ -84,7 +84,7 @@ def _add_trf_args(parser: argparse.ArgumentParser) -> None:
         help="Maximum motif length for TRF (default: 500).")
     group.add_argument(
         "--min-identity", type=float, default=0.8, 
-        help="Minimum identity for TRF (default: 0.8).")
+        help="Minimum identity as 0-1 fraction for TRF (default: 0.8).")
     group.add_argument(
         "--min-rep-units", type=int, default=3, 
         help="Minimum repeat number for seed (default: 3).")
@@ -93,7 +93,7 @@ def _add_trf_args(parser: argparse.ArgumentParser) -> None:
         help="Minimum length for seed in bp (default: 10).")
     group.add_argument(
         "--max-rep-length", type=int, default=10000, 
-        help="Maximum length for seed in bp (default: 10000).")
+        help="Maximum extension length in bp (default: 10000).")
 
 
 def _add_filter_args(parser: argparse.ArgumentParser) -> None:
@@ -111,18 +111,18 @@ def _add_filter_args(parser: argparse.ArgumentParser) -> None:
              "after --exclude-motif-sizes). Leave empty to disable.",
     )
     group.add_argument(
-        "--min-repeat-coverage", type=float, default=0.8,
+        "--min-repeat-coverage", type=float, default=0.0,
         help="Minimum fraction of the insertion covered by single repeat "
              "(rep_length / insert_size). Each row is one repeat, so "
-             "coverage is not summed across repeats in the same insertion.",
+             "coverage is not summed across repeats in the same insertion. Default: 0.0.",
     )
     group.add_argument(
         "--min-purity", type=float, default=0.7,
-        help="Minimum TRF purity (column 'purity', 0-1 scale). ",
+        help="Minimum TRF purity (column 'purity', 0-1 scale). Default: 0.7",
     )
     group.add_argument(
-        "--min-depth", type=int, default=30,
-        help="Minimum number of supporting reads ('depth'). Default: 30.",
+        "--min-depth", type=int, default=0,
+        help="Minimum number of supporting reads ('depth'). Default: 0.",
     )
 
 
@@ -281,7 +281,7 @@ def _cmd_detect(args: argparse.Namespace) -> int:
     # for each provided catalog
     for name, catalog in catalogs.items():
 
-        # screen sv vcf frame against catalog for novelelty
+        # screen sv vcf frame against catalog for novelty
         block = catalog.screen_frame(
             frame[args.chrom_col], points, frame[args.motif_col],
             window=args.window, tolerance=tolerance, prefix=f"{name}_"

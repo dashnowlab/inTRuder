@@ -40,8 +40,7 @@ A DataFrame with one row per repeat call, and nothing written to disk:
     rep_length          rep_end - rep_start
     rep_units           rep_length // motif_length
 
-When no insertion yields a repeat the frame has no columns at all, so a caller
-should check for an empty result before indexing it.
+Raises RuntimeError in CLI when no repeat is found.
 
 Parameters
 ----------

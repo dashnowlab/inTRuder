@@ -136,11 +136,9 @@ some calls and lose others.
 |---|---|---|
 | `--exclude-motif-sizes` | none | `motif_length` is not in the comma list |
 | `--keep-motif-sizes` | none | `motif_length` is in the comma list (after the exclusion) |
-| `--min-repeat-coverage` | 0.8 | `repeat_coverage` ≥ value |
+| `--min-repeat-coverage` | 0.0 | `repeat_coverage` ≥ value |
 | `--min-purity` | 0.7 | `purity` ≥ value |
-| `--max-insert-size` | 10000 | `insert_size` ≤ value |
-| `--min-depth` | 30 | **both** `depth` numbers ≥ value |
-| `-s`, `--stats-output` | | accepted, not used |
+| `--min-depth` | 0 | **both** `depth` numbers ≥ value |
  
 **Screening**
  
@@ -173,11 +171,9 @@ some calls and lose others.
   1-based files. Gzip is detected automatically.
 - Each run re-reads and re-indexes every catalogue. There is no index cache.
 **Filtering**
-- `repeat_coverage` is 0.0 when `insert_size` is not positive.
-- `--min-depth` needs the reference-supporting count to pass too, so calls with
-  low reference depth (for example homozygous-alt insertions) are dropped. Use
-  `--min-depth 0` to disable it, for instance when `DV`/`DR` are all zero in
-  your VCF.
+- `repeat_coverage` is 0.0 when `insert_size` is not positive. 
+The default of `--min-repeat-coverage 0` disables it.
+- `--min-depth` The default of `--min-depth 0` disables it.
 **Errors**
 - `ValueError`, `FileNotFoundError` and `RuntimeError` print `error: …` and exit 1.
   Anything else is a plain traceback.
