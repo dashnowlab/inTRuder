@@ -14,13 +14,6 @@ data/
 
 # Local environments and build output — all rebuilt inside the image
 .venv/
-backend/.venv/
-backend/.cache/
-frontend/node_modules/
-frontend/.next/
-frontend/out/
-renv/library/
-renv/staging/
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/
@@ -37,5 +30,4 @@ renv/staging/
 # Not needed to build or run either service
 docs/
 notebooks/
-src/R/
 tests/

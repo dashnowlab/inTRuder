@@ -11,7 +11,7 @@ dependencies = [
     "cyvcf2>=0.34.0",
     "joblib>=1.3",
     "numpy>=2.0",
-    "optuna>=4.9.0",
+    #"optuna>=4.9.0",
     "pandas>=3.0.5",
     "parasail>=1.3.4",
     "pysam>=0.23",
@@ -55,9 +55,9 @@ analysis = [
 # The DNAnexus toolkit, for `scripts/dnanexus/dx-*.sh` and anything else that
 # talks to the platform. Not in `dev` because `uv sync` installs `dev` by default
 # and this is only useful with a token in `.env`. See docs/scripts/DNANexus.md.
-dx = [
-    "dxpy>=0.412.0",
-]
+#dx = [
+#    "dxpy>=0.412.0",
+#]
 
 [build-system]
 requires = ["uv_build>=0.9,<0.10"]
