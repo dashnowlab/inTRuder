@@ -46,10 +46,10 @@ dev = [
 # the pipeline itself never draws anything, and matplotlib/scikit-learn are a
 # large install for a Nextflow worker that only needs to write a TSV.
 analysis = [
-    "matplotlib>=3.11.1",
-    "scikit-learn>=1.5",
-    "seaborn>=0.13",
-    "umap-learn>=0.5.6",
+    #"matplotlib>=3.11.1",
+    #"scikit-learn>=1.5",
+    #"seaborn>=0.13",
+    #"umap-learn>=0.5.6",
 ]
 
 # The DNAnexus toolkit, for `scripts/dnanexus/dx-*.sh` and anything else that
