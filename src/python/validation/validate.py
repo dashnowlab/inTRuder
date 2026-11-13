@@ -2,7 +2,9 @@ from pathlib import Path
 from datetime import date
 import argparse
 import gzip
+import tempfile
 
+from tqdm import tqdm
 import pandas as pd
 
 from intruder.coords import to_external, to_internal
@@ -44,6 +46,7 @@ def prep_validation(args, samples: list, strip_hp = True) -> None:
         position for position, name in enumerate(sample_list)
             if name.startswith(smps)
     ]
+
     if not keep_positions:
         raise ValueError("[prep] No header samples match the requested sample prefixes")
     #kept_sample_names = [sample_list[position] for position in keep_positions]
@@ -122,41 +125,78 @@ def run_prep(args) -> int:
     return 0
 
 
+def split_validation_by_sample(path: Path | str, samples: set, out_dir: Path,
+                               chunksize: int = 1000000) -> dict[str, Path]:
+    """One pass over the prepped file, writing each sample's loci to its own file.
+
+    Returns {sample: path}. Only samples in ``samples`` are kept, and loci are
+    deduplicated per chunk to shrink the files (both haplotypes give duplicate rows).
+    """
+    locus_columns = ["chrom", "start", "end", "motif"]
+    sample_paths: dict[str, Path] = {}
+
+    for chunk in pd.read_csv(
+        path, sep="\t", chunksize=chunksize,
+        usecols=locus_columns + ["sample"],
+        dtype={"sample": "category"},
+    ):
+        chunk = chunk[chunk["sample"].isin(samples)]
+        for sample, rows in chunk.groupby("sample", sort=False, observed=True):
+            # first time a sample is seen: new file with header, later chunks append
+            is_new = sample not in sample_paths
+            if is_new:
+                sample_paths[sample] = out_dir / f"sample_{len(sample_paths)}.tsv"
+            rows[locus_columns].drop_duplicates().to_csv(
+                sample_paths[sample], sep="\t", index=False,
+                mode="w" if is_new else "a", header=is_new)
+    return sample_paths
+
+
 def run_validate(args) -> int:
     # read in novelty results
     frame_cols = ["chrom", "ins_coord", "sample", "motif", "novelty"]
-
     frame = load_novelty_results(args.input, frame_cols)
     #frame[args.sample_col] = frame[args.sample_col].astype(str)
-
-    # load prepped validation data (sample stays categorical to save memory)
-    val = pd.read_csv(args.val_in, sep="\t", dtype={"sample": "category"})
-    by_sample = {sample: rows for sample, rows in val.groupby("sample", sort=False, observed=True)}
 
     # format 
     points = to_internal(pd.to_numeric(frame["ins_coord"], errors="raise"), 1)
 
     blocks: list[pd.DataFrame] = []
 
+    print("Reading validation file...")
     # each pass is (validation repeats to screen against, novelty rows to screen)
-    if args.within_sample:  # changed
-        # one pass per sample, each against its own validation repeats only  # changed
-        passes = [(by_sample.get(sample), rows) for sample, rows in frame.groupby("sample", sort=False)]  # changed
-    else:  # changed
-        # single pass: all calls against every validation repeat, regardless of sample  # changed
-        passes = [(val.drop_duplicates(["chrom", "start", "end", "motif"]), frame)]  # changed
+    if args.within_sample: 
+        # one pass over the big file, then each sample reads only its own small file
+        tmp_dir = tempfile.TemporaryDirectory()
+        sample_paths = split_validation_by_sample(
+            args.validation, set(frame["sample"]), Path(tmp_dir.name))
+        
+        # sample's file is read only when its pass runs
+        passes = (
+            (pd.read_csv(sample_paths[sample], sep="\t").drop_duplicates()
+             if sample in sample_paths else None, rows)
+            for sample, rows in frame.groupby("sample", sort=False)
+        )
+    else: 
+        # single pass: all calls against every validation repeat, regardless of sample 
+        # unique loci only, deduplicated per chunk to bound memory
+        locus_columns = ["chrom", "start", "end", "motif"]
+        unique_loci = pd.concat(
+            chunk.drop_duplicates() for chunk in
+            pd.read_csv(args.validation, sep="\t", usecols=locus_columns, chunksize=1000000)
+        ).drop_duplicates()
+        passes = [(unique_loci, frame)]
 
     # for each sample in the novelty results
-    print(f"[novelty] Running novelty...")
-    for val_rows, rows in passes:  # changed
+    for val_rows, rows in tqdm(passes, total=len(sample_paths), unit="samples", desc="[novelty]"): 
 
         # no validation repeats for this sample: nothing to screen against
-        if val_rows is None:  # changed
+        if val_rows is None: 
             blocks.append(pd.DataFrame({"val_novelty": "unscreened"}, index=rows.index))
 
         else:
-            # screen this sample's calls against its own validation repeats only
-            ref = _finalize(val_rows[["chrom", "start", "end", "motif"]], args.validation)  # changed
+            # screen this sample's calls
+            ref = _finalize(val_rows[["chrom", "start", "end", "motif"]], args.validation) 
             catalog = RepeatCatalog.from_frame(ref, platform="val")
             block = catalog.screen_frame(
                 rows["chrom"], points.loc[rows.index], rows["motif"],
@@ -184,42 +224,42 @@ def run_validate(args) -> int:
     # run's verdict against the validation verdict, one row per distinct call
     calls = out.drop_duplicates(["chrom", "ins_coord", "sample", "motif"])
 
-    #screened = calls[calls["val_novelty"] != "unscreened"]
-    print(f"[validate] {((calls['val_novelty'] == 'known') & (calls['novelty'] == 'novel_locus')).sum():,} of {len(calls[calls['novelty'] == 'novel_locus']):,} "
-          f"unique novel calls supported in their own sample")
-    print(f"[validate] {((calls['val_novelty'] == 'known')).sum():,} of {len(calls):,} "
-        f"unique calls supported in their own sample")
+    screened = calls[calls["val_novelty"] != "unscreened"]
+    print(f"[validate] {((screened['val_novelty'])).sum():,} of {len(calls):,} "
+            f"unique calls screened against their own sample")
+    print(f"[validate] {((screened['val_novelty'] == 'known') & (screened['novelty'] == 'novel_locus')).sum():,} of {len(screened[screened['novelty'] == 'novel_locus']):,} "
+          f"unique screened novel calls supported in their own sample")
+    print(f"[validate] {((screened['val_novelty'] == 'known')).sum():,} of {len(calls):,} "
+        f"unique screened calls supported in their own sample")
 
     return 0
 
 
 def main() -> int:
     dt = date.today().strftime("%Y%m%d")
-
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    # shared args inherited by both subcommands
+    common_parser = argparse.ArgumentParser(add_help=False)
+    common_parser.add_argument("--input", default="/projects/garner1@xsede.org/dashnow_lab/inTRuder/data/hprc_multisample_novelty_20261027.tsv")
+    common_parser.add_argument("--validation", default="/projects/garner1@xsede.org/dashnow_lab/inTRuder/data/hg38_frmd.tsv.gz")
+
     # prep: stream the validation catalog to a per-(repeat, sample) tsv
-    prep_parser = subparsers.add_parser("prep", help="prep the validation catalog")
-    prep_parser.add_argument("--input", default="/mnt/s/anshutz/Dashnow_Lab/projects/inTRuder/data/hprc_multisample_novelty_20261027.tsv")
-    prep_parser.add_argument("--validation", default="/mnt/s/anshutz/Dashnow_Lab/projects/inTRuder/data/catalogs/hg38.v1.insertions.bed")
-    prep_parser.add_argument("--val-out", default="/projects/garner1@xsede.org/dashnow_lab/inTRuder/data/hg38_frmd.tsv")
+    prep_parser = subparsers.add_parser("prep", help="prep the validation catalog", parents=[common_parser])
+    prep_parser.add_argument("--val-out", default="/projects/garner1@xsede.org/dashnow_lab/inTRuder/data/novelty_val_within-sample.tsv")
     prep_parser.add_argument("--all-loci", action='store_true', default=False)
     prep_parser.set_defaults(func=run_prep)
 
     # validate: screen novelty calls against the prepped validation tsv
-    validate_parser = subparsers.add_parser("validate", help="screen novelty calls")
-    validate_parser.add_argument("--input", default="/mnt/s/anshutz/Dashnow_Lab/projects/inTRuder/data/hprc_multisample_novelty_20261027.tsv")
-    validate_parser.add_argument("--validation", default="/mnt/s/anshutz/Dashnow_Lab/projects/inTRuder/data/catalogs/hg38.v1.insertions.bed")
-    validate_parser.add_argument("--val-in", default="/projects/garner1@xsede.org/dashnow_lab/inTRuder/data/hg38_frmd.tsv")
-    validate_parser.add_argument("--output", default=f"/mnt/s/anshutz/Dashnow_Lab/projects/inTRuder/data/validation_results_{dt}.tsv")
+    validate_parser = subparsers.add_parser("validate", help="screen novelty calls", parents=[common_parser])
+    validate_parser.add_argument("--output", default=f"/projects/garner1@xsede.org/dashnow_lab/inTRuder/data/validation_results_{dt}.tsv")
     validate_parser.add_argument("--window", type=int, default=10)
     validate_parser.add_argument("--within-sample", action=argparse.BooleanOptionalAction, default=True)
     validate_parser.set_defaults(func=run_validate)
-
     args = parser.parse_args()
-    return args.func(args)
 
+    return args.func(args)
 
 if __name__ == "__main__":
     main()

@@ -30,7 +30,7 @@ annotations the platform supplied.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
@@ -41,6 +41,7 @@ from .motifs import (
     DEFAULT_TOLERANCE,
     MATCH_NONE,
     MotifEquivalence,
+    motif_distance,
     MotifTolerance,
     canonical_motif,
 )
@@ -232,6 +233,7 @@ class RepeatCatalog:
             annotations=annotations,
         )
 
+
     def _overlap_batch(self, chrom: str, q_start: np.ndarray,
                        q_end: np.ndarray) -> list[np.ndarray]:
         """Global row indices intersecting each half-open query interval.
@@ -243,10 +245,10 @@ class RepeatCatalog:
         empty = np.empty(0, dtype=np.int64)
         bounds = self._bounds.get(chrom)
         if bounds is None:
-            return [empty] * len(q_start)
+            return [empty] * len(q_start), [empty] * len(q_start)
         lo, hi = bounds
         if hi <= lo:
-            return [empty] * len(q_start)
+            return [empty] * len(q_start), [empty] * len(q_start)
 
         starts = self._starts[lo:hi]
         ends = self._ends[lo:hi]
@@ -255,8 +257,10 @@ class RepeatCatalog:
         right = np.searchsorted(starts, q_end, side="left") - 1
 
         out: list[np.ndarray] = []
+        flanks: list[np.ndarray] = []
         for k in range(len(q_start)):
-            i = int(right[k])
+            left = int(right[k])
+            i = left
             floor = int(q_start[k])
             hits: list[int] = []
             while i >= 0 and max_end[i] > floor:
@@ -265,7 +269,15 @@ class RepeatCatalog:
                 i -= 1
             hits.reverse()
             out.append(np.asarray(hits, dtype=np.int64) if hits else empty)
-        return out
+
+            flank: list[int] = []
+            if left >= 0:
+                # First row whose end equals the prefix max
+                flank.append(lo + int(np.searchsorted(max_end, max_end[left], side="left")))
+            if left + 1 < hi - lo:
+                flank.append(lo + left + 1)
+            flanks.append(np.asarray(flank, dtype=np.int64))
+        return out, flanks
 
     # -- screening ---------------------------------------------------------- #
 
@@ -289,7 +301,15 @@ class RepeatCatalog:
             if best_key is None or key < best_key:
                 best_key = key
                 best = Hit(repeat, distance, found.edits, found.kind)
+                
+        # Non-matches carry a sentinel edit count; report the real distance for the winner
+        # if best is not None and not best.motif_matches:
+        #     true_edits = motif_distance(
+        #         motif, best.repeat.motif,
+        #         max(len(motif), len(best.repeat.motif)), self.equivalence)
+        #     best = replace(best, motif_edits=true_edits)
         return best
+
 
     def _status(self, chrom: str, n_nearby: int, best: Hit | None) -> str:
         if chrom not in self._bounds:
@@ -332,17 +352,29 @@ class RepeatCatalog:
         positions = pd.Series(np.arange(n))
         for chrom, group in positions.groupby(pd.Series(chrom_values), sort=False):
             rows = group.to_numpy()
-            batch = self._overlap_batch(
+
+            # No catalogue rows on this contig: nothing to search, report unscreened
+            if chrom not in self._bounds:
+                for row in rows:
+                    novelty[row] = self._status(chrom, 0, None)
+                continue
+
+            batch, flanks = self._overlap_batch(
                 chrom, point_values[rows] - window, point_values[rows] + window + 1)
-            
-            for row, indices in zip(rows, batch):
+
+            for row, indices, flank in zip(rows, batch, flanks):
                 point = int(point_values[row])
-                best = self._best_hit(indices, chrom, point, motif_values[row],
+                candidates = indices
+                if not indices.size:
+                    distances = [interval_distance(point, point + 1,
+                                                   self._starts[i], self._ends[i])
+                                 for i in flank]
+                    candidates = flank[[int(np.argmin(distances))]]
+                best = self._best_hit(candidates, chrom, point, motif_values[row],
                                       canonicals[row], tolerance)
                 n_nearby[row] = len(indices)
                 novelty[row] = self._status(chrom, len(indices), best)
-                if best is None:
-                    continue
+
                 cells["start"][row] = best.repeat.start
                 cells["end"][row] = best.repeat.end
                 cells["distance"][row] = best.distance
