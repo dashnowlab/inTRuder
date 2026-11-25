@@ -69,7 +69,10 @@ def _add_catalog_args(parser: argparse.ArgumentParser) -> None:
 
 def _add_trf_args(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("trf")
-    
+
+    # group.add_argument(
+    #     "--depth-id", default='DV', 
+    #     help="VCF FORMAT id for read depth (default: 'DV').")
     group.add_argument(
         "--min-sv-length", type=int, default=50, 
         help="Minimum length of structural variants to consider (default: 50).")
@@ -178,11 +181,9 @@ def _tolerance(args: argparse.Namespace) -> MotifTolerance:
                           max_edit_fraction=args.max_motif_edit_fraction,
                           min_subrepeat_motif=args.min_subrepeat_motif)
 
-
 # --------------------------------------------------------------------------- #
 # file ops
 # --------------------------------------------------------------------------- #
-
 
 def load_catalogs(specs: list[str], *, equivalence: MotifEquivalence,
                   formats: dict[str, str] | None = None,
@@ -205,7 +206,6 @@ def load_catalogs(specs: list[str], *, equivalence: MotifEquivalence,
             print(f"[novelty] {name}: {len(catalogs[name]):,} repeat(s) from "
                   f"{path} (fmt={fmt})", file=sys.stderr)
     return catalogs
-
 
 # --------------------------------------------------------------------------- #
 # reporting
@@ -254,21 +254,12 @@ def combine_verdicts(statuses: pd.DataFrame) -> pd.Series:
 
 
 # --------------------------------------------------------------------------- #
-# commands
+# command helpers
 # --------------------------------------------------------------------------- #
 
-def _cmd_detect(args: argparse.Namespace) -> int:
-
-    # load all provided reference catalogs
-    catalogs = load_catalogs(args.repeats, equivalence=_equivalence(args),
-                             formats=_parse_formats(args.format))
-
-    # read in input vcf, run trf, and output to dataframe
-    frame = run_trf_on_insertions(args)
-
-    # filter tandem reapeats according to hyperparams
-    frame = filter_trf(frame, args).reset_index(drop=True)
-
+def _screen_and_write(frame: pd.DataFrame, args: argparse.Namespace,
+                      catalogs: dict[str, RepeatCatalog]) -> None:
+    """Screen a repeat table against every catalogue, write the TSV and report."""
     tolerance = _tolerance(args)
 
     # format 
@@ -302,8 +293,40 @@ def _cmd_detect(args: argparse.Namespace) -> int:
     out.to_csv(args.output, sep="\t", index=False, na_rep="NA")
 
     _report(out, args, catalogs)
+
+# --------------------------------------------------------------------------- #
+# commands
+# --------------------------------------------------------------------------- #
+
+def _cmd_detect(args: argparse.Namespace) -> int:
+
+    # load all provided reference catalogs
+    catalogs = load_catalogs(args.repeats, equivalence=_equivalence(args),
+                             formats=_parse_formats(args.format))
+
+    # read in input vcf, run trf, and output to dataframe
+    frame = run_trf_on_insertions(args)
+
+    # filter tandem reapeats according to hyperparams
+    frame = filter_trf(frame, args).reset_index(drop=True)
+
+    # check novelty of TRs against catalogs
+    _screen_and_write(frame, args, catalogs)
     return 0
 
+
+def _cmd_novelty(args: argparse.Namespace) -> int:
+
+    # load all provided reference catalogs
+    catalogs = load_catalogs(args.repeats, equivalence=_equivalence(args),
+                             formats=_parse_formats(args.format))
+
+    # read the repeat table; chrom as str so "1" matches the catalogue's "1"
+    frame = pd.read_csv(args.input, sep="\t", dtype={args.chrom_col: str})
+
+    # check novelty of TRs against catalogs
+    _screen_and_write(frame, args, catalogs)
+    return 0
 
 # --------------------------------------------------------------------------- #
 # parser
@@ -338,6 +361,20 @@ def build_parser() -> argparse.ArgumentParser:
     _add_filter_args(detect)
     _add_screen_args(detect)
     detect.set_defaults(func=_cmd_detect)
+
+    novelty = subparsers.add_parser(
+        "novelty", help="screen a TSV of tandem repeats against reference "
+                        "catalogues (no TRF calling or filtering)")
+    novelty.add_argument("input", help="TSV with chrom, position and motif columns")
+    novelty.add_argument("output")
+    novelty.add_argument("--chrom-col", default="chrom")
+    novelty.add_argument("--pos-col", default="ins_coord",
+                         help="column with the reference-genome coordinate "
+                              "(default: %(default)s)")
+    novelty.add_argument("--motif-col", default="motif")
+    _add_catalog_args(novelty)
+    _add_screen_args(novelty)
+    novelty.set_defaults(func=_cmd_novelty)
 
     return parser
 

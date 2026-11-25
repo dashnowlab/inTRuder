@@ -3,13 +3,19 @@ from datetime import date
 import argparse
 import gzip
 import tempfile
+import itertools
 
 from tqdm import tqdm
 import pandas as pd
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.csv as pacsv
+import pyarrow.dataset as ds
 
 from intruder.coords import to_external, to_internal
 from intruder.catalog import RepeatCatalog
 from intruder.platforms import _finalize, _is_gzip
+
 
 def load_novelty_results(path: Path | str, cols: list) -> pd.DataFrame:
     return pd.read_csv(path, sep="\t", usecols=cols)
@@ -125,36 +131,44 @@ def run_prep(args) -> int:
     return 0
 
 
-def split_validation_by_sample(path: Path | str, samples: set, out_dir: Path,
-                               chunksize: int = 1000000) -> dict[str, Path]:
-    """One pass over the prepped file, writing each sample's loci to its own file.
+def filter_batches(reader, sample_values: pa.Array):
+    """Yield each batch reduced to rows whose sample is requested."""
+    for batch in reader:
+        yield batch.filter(pc.is_in(batch["sample"], value_set=sample_values))
 
-    Returns {sample: path}. Only samples in ``samples`` are kept, and loci are
-    deduplicated per chunk to shrink the files (both haplotypes give duplicate rows).
+
+def split_validation_by_sample(path: Path | str, samples: set, out_dir: Path) -> int:
+    """Pass over prepped file, writing a Parquet partition per sample.
+
+    Returns the number of sample partitions written.
     """
     locus_columns = ["chrom", "start", "end", "motif"]
-    sample_paths: dict[str, Path] = {}
+    reader = pacsv.open_csv(
+        path,
+        read_options=pacsv.ReadOptions(use_threads=True, block_size=32 << 20),
+        parse_options=pacsv.ParseOptions(delimiter="\t"),
+        convert_options=pacsv.ConvertOptions(
+            include_columns=locus_columns + ["sample"],
+            column_types={"chrom": pa.string(), "start": pa.int64(),
+                          "end": pa.int64(), "motif": pa.string(),
+                          "sample": pa.string()},
+        ),
+    )
 
-    for chunk in pd.read_csv(
-        path, sep="\t", chunksize=chunksize,
-        usecols=locus_columns + ["sample"],
-        dtype={"sample": "category"},
-    ):
-        chunk = chunk[chunk["sample"].isin(samples)]
-        for sample, rows in chunk.groupby("sample", sort=False, observed=True):
-            # first time a sample is seen: new file with header, later chunks append
-            is_new = sample not in sample_paths
-            if is_new:
-                sample_paths[sample] = out_dir / f"sample_{len(sample_paths)}.tsv"
-            rows[locus_columns].drop_duplicates().to_csv(
-                sample_paths[sample], sep="\t", index=False,
-                mode="w" if is_new else "a", header=is_new)
-    return sample_paths
+    files_written = itertools.count(1)
+    ds.write_dataset(
+            filter_batches(reader, pa.array(sorted(samples))),
+            out_dir, schema=reader.schema, format="parquet",
+            partitioning=["sample"], partitioning_flavor="hive",
+            existing_data_behavior="overwrite_or_ignore",
+            file_visitor=lambda written: print("files written:", next(files_written), flush=True),
+    )
+    return len(list(out_dir.glob("sample=*")))
 
 
 def run_validate(args) -> int:
     # read in novelty results
-    frame_cols = ["chrom", "ins_coord", "sample", "motif", "novelty"]
+    frame_cols = ["chrom", "ins_coord", "sample", "motif", "insert_size", "purity","novelty"]
     frame = load_novelty_results(args.input, frame_cols)
     #frame[args.sample_col] = frame[args.sample_col].astype(str)
 
@@ -168,14 +182,28 @@ def run_validate(args) -> int:
     if args.within_sample: 
         # one pass over the big file, then each sample reads only its own small file
         tmp_dir = tempfile.TemporaryDirectory()
-        sample_paths = split_validation_by_sample(
+
+        written_count = split_validation_by_sample(
             args.validation, set(frame["sample"]), Path(tmp_dir.name))
-        
-        # sample's file is read only when its pass runs
+
+        # print("written:", written_count, flush=True)
+        # print("on disk:", sorted(p.name for p in Path(tmp_dir.name).iterdir())[:5], flush=True)
+        # print("novelty:", sorted(map(repr, set(frame["sample"])))[:5], flush=True)
+
+        # samples that have a validation file on disk
+        matched_samples = {
+            sample for sample in frame["sample"].unique()
+            if (Path(tmp_dir.name) / f"sample={sample}").exists()
+        }
+        matched_mask = frame["sample"].isin(matched_samples)
+
+        # every call without a matching sample is unscreened, filled in one shot
+        blocks.append(pd.DataFrame({"val_novelty": "unscreened"}, index=frame.index[~matched_mask]))
+
+        # only matched samples are looped over
         passes = (
-            (pd.read_csv(sample_paths[sample], sep="\t").drop_duplicates()
-             if sample in sample_paths else None, rows)
-            for sample, rows in frame.groupby("sample", sort=False)
+            (pd.read_parquet(Path(tmp_dir.name) / f"sample={sample}").drop_duplicates(), rows)
+            for sample, rows in frame[matched_mask].groupby("sample", sort=False)
         )
     else: 
         # single pass: all calls against every validation repeat, regardless of sample 
@@ -188,28 +216,23 @@ def run_validate(args) -> int:
         passes = [(unique_loci, frame)]
 
     # for each sample in the novelty results
-    for val_rows, rows in tqdm(passes, total=len(sample_paths), unit="samples", desc="[novelty]"): 
+    for val_rows, rows in tqdm(passes, total=len(matched_samples), unit="samples", desc="[novelty]"): 
 
-        # no validation repeats for this sample: nothing to screen against
-        if val_rows is None: 
-            blocks.append(pd.DataFrame({"val_novelty": "unscreened"}, index=rows.index))
+        # screen this sample's calls
+        ref = _finalize(val_rows[["chrom", "start", "end", "motif"]], args.validation) 
+        catalog = RepeatCatalog.from_frame(ref, platform="val")
+        block = catalog.screen_frame(
+            rows["chrom"], points.loc[rows.index], rows["motif"],
+            window=args.window, prefix="val_"
+            )
 
-        else:
-            # screen this sample's calls
-            ref = _finalize(val_rows[["chrom", "start", "end", "motif"]], args.validation) 
-            catalog = RepeatCatalog.from_frame(ref, platform="val")
-            block = catalog.screen_frame(
-                rows["chrom"], points.loc[rows.index], rows["motif"],
-                window=args.window, prefix="val_"
-                )
+        # # reset index to match input block (screen changes them)
+        block.index = rows.index
 
-            # # reset index to match input block (screen changes them)
-            block.index = rows.index
-
-            # a chrom(contig) with none of this sample's repeats is novel, not unscreened
-            block["val_novelty"] = block["val_novelty"].replace("unscreened", "val_novel")
-            block["val_novelty"] = block["val_novelty"].replace("novel_locus", "val_novel")
-            blocks.append(block)
+        # a chrom(contig) with none of this sample's repeats is novel, not unscreened
+        block["val_novelty"] = block["val_novelty"].replace("unscreened", "val_novel")
+        block["val_novelty"] = block["val_novelty"].replace("novel_locus", "val_novel")
+        blocks.append(block)
 
     # ensure coords line up with input format
     val_block = pd.concat(blocks)
@@ -225,11 +248,12 @@ def run_validate(args) -> int:
     calls = out.drop_duplicates(["chrom", "ins_coord", "sample", "motif"])
 
     screened = calls[calls["val_novelty"] != "unscreened"]
-    print(f"[validate] {((screened['val_novelty'])).sum():,} of {len(calls):,} "
+    print(f"[validate] output {len(out)} rows to {args.output}")
+    print(f"[validate] {len(screened)} of {len(calls)}"
             f"unique calls screened against their own sample")
-    print(f"[validate] {((screened['val_novelty'] == 'known') & (screened['novelty'] == 'novel_locus')).sum():,} of {len(screened[screened['novelty'] == 'novel_locus']):,} "
+    print(f"[validate] {(((screened['val_novelty'] == 'known') | (screened['val_novelty'] == 'novel_motif')) & (screened['novelty'] == 'novel_locus')).sum()} of {len(screened[screened['novelty'] == 'novel_locus'])} "
           f"unique screened novel calls supported in their own sample")
-    print(f"[validate] {((screened['val_novelty'] == 'known')).sum():,} of {len(calls):,} "
+    print(f"[validate] {((screened['val_novelty'] == 'known') | (screened['val_novelty'] == 'novel_motif')).sum()} of {len(screened)} "
         f"unique screened calls supported in their own sample")
 
     return 0

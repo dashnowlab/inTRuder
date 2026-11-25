@@ -118,6 +118,14 @@ def suppress_pytrf_errors():
         os.close(save_stderr_fd)
 
 
+def check_sniffles_surviver(vcf: VCF):
+    return not any(
+        header_line.info().get("HeaderType") == "FORMAT"
+        and header_line.info().get("ID") == "DV"
+        for header_line in vcf.header_iter()
+    )
+
+
 def run_trf_on_insertions(args):
     """
     Run tandem repeat calling on the insertion variants of an input VCF and return the calls.
@@ -145,34 +153,38 @@ def run_trf_on_insertions(args):
      
     rows = []
     vcf = VCF(args.input)
+    # True if header does not define a FORMAT field with ID=DV
+    snff_srv = check_sniffles_surviver(vcf) 
 
     samples = vcf.samples
     for variant in tqdm(vcf, ncols=80, smoothing=0.1, unit=' variants', desc="[trf] "):
         if variant.is_sv and variant.INFO.get("SVTYPE") == "INS":
             ID    = variant.ID
             REF   = variant.REF
+
             if variant.ALT is None or len(variant.ALT) == 0:
                 continue
+
             ALT   = variant.ALT[0]
             if REF == ALT[:len(variant.REF)]:  # Get the inserted sequence
                 ALT = ALT[len(variant.REF):]
-            DR    = variant.format('DR')
-            #DV    = variant.format('DV')    # remove if survivor
+        
+            DPTH    = variant.format('DR') if snff_srv else variant.format('DV')
+
             if variant.INFO.get("SVLEN") is None:
                 continue
+
             LEN   = variant.INFO.get("SVLEN")  # length of the insertion
             if LEN < args.min_sv_length or LEN > args.max_sv_length:
                 continue
 
             for s, sample in enumerate(samples):
                 genotype = variant.genotypes[s]
-                for gt in genotype[:2]:
+                for gt in set(genotype[:2]): # loop over only unique alleles
                     if gt == 0 or gt == '.' or gt == -1: continue  # Skip reference alleles
-                    #var_depth = DV[s][0] # depth of reads supporting variant allele
 
-                    # survivor handling
-                    var_depth = DR[s][0]
-                    
+                    var_depth = DPTH[s][1] if snff_srv else DPTH[s][0]
+                       
                     n_trf = 0
                     trf_repeats    = []
 
@@ -217,8 +229,6 @@ def run_trf_on_insertions(args):
 
                     for rep in trf_repeats:
                         rows.append(rep)
-
-
 
 
     # create & return pandas df of trs

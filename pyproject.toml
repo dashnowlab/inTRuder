@@ -14,18 +14,19 @@ dependencies = [
     #"optuna>=4.9.0",
     "pandas>=3.0.5",
     "parasail>=1.3.4",
+    "pyarrow>=26.0.1",
     "pysam>=0.23",
     "pytrf>=1.5.0",
     "tqdm>=4.70.0",
 ]
 
 [project.scripts]
-# `uv run novelty ...` etc. from anywhere in the repo. The command names are
+# `uv run intruder ...` etc. from anywhere in the repo. The command names are
 # unchanged from before the move -- only the module paths behind them shift, so
 # nobody's notes or Nextflow process bodies break.
 svpytrf     = "intruder.pipeline.trf.sv_trfcaller:main"
 filter      = "intruder.pipeline.trf.filter_ins_trf:main"
-novelty     = "intruder.cli:main"
+intruder     = "intruder.cli:main"
 # strchive   = "intruder.pipeline.strchive.__main__:main"
 compression = "intruder.pipeline.compression.annotate:main"
 

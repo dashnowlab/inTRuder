@@ -59,14 +59,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import NamedTuple
 
-# The motif length that separates an STR from a VNTR. At or below it the exact
-# sequence of the unit is reliable and a single substitution is a real
-# difference -- CAG and CAT are not the same repeat. Above it, callers and
-# assemblies routinely disagree on the consensus, so exact equality is the wrong
-# test. str-analysis draws the same line at 6bp: `utils/eh_catalog_utils.py`
-# `compute_repeat_unit_id` keys motifs <= 6bp by sequence and longer ones by
-# length alone, and `merge_loci.py` exposes that as
-# --motif-length-match-sufficient-for-VNTRs.
+# The motif length that separates an STR from a VNTR.
 STR_MAX_MOTIF = 6
 
 
